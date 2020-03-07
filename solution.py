@@ -79,6 +79,7 @@ class RoutPlanner:
             self.stations.append(p)
 
     def plan(self, pos, angle, target, last_pos):
+        self.rad = 6000
         i = self.stations.index(target)
         if i != 0:
             self.stations = self.stations[i:] + self.stations[:i]
@@ -102,9 +103,15 @@ class RoutPlanner:
     def calc_direction(self, pos, angle, target, last_pos):
         xvals, yvals = self.plan(pos, angle, target, last_pos)
         print ("pos={}, x0={} y0={}".format(pos, xvals[0], yvals[0]), file=sys.stderr)
-        c, r = circ_rad(pos,
-                (xvals[0], yvals[0]),
+        c, r = circ_rad(last_pos, pos,
                 (xvals[1], yvals[1]))
+
+        print ("r={}".format(r), file=sys.stderr)
+        self.thrust = int(round(r/3300. * 100))
+        if self.thrust > 100:
+            self.thrust = 100
+        elif self.thrust < 20:
+            self.thrust = 20
 
         pc = np.array([xvals[0] - pos[0], yvals[0] - pos[1]])
         crel = np.array(c) - np.array(pos)
@@ -142,20 +149,21 @@ class Naive:
         ax = math.atan(300.0/float(dist)) * 180 / 3.141
 
         boost = False
-        thrust = 100
+        if not opt:
+            thrust = 100
         aangle = math.fabs(angle)
         eangle = aangle - ax
         print ("--" + str(eangle) + " " + str(dist), file=sys.stderr)
 
         #if eangle > 0 and not opt:
         #    thrust = int(100 * ( 1.0 -  eangle/60.))
-        if dist < 2800:
-            thrust = 50
-        if dist > 8000 and eangle < 5 and not self.boosted:
-            boost = True
-            self.boosted = True
-        if eangle > 3 and dist < 2000:
-            thrust = 10
+        if not opt:
+            if dist < 2800:
+                thrust = 50
+            if dist > 8000 and eangle < 5 and not self.boosted:
+                boost = True
+                self.boosted = True
+        print ("opt={}".format(opt), file=sys.stderr)
         return target, thrust, boost
 
 class calib_circ:
@@ -210,7 +218,4 @@ if __name__ == "__main__":
             print(str(int(target[0])) + " " + str(int(target[1]))+ " BOOST")
         else:
             print(str(int(target[0])) + " " + str(int(target[1]))+ " " + str(thrust))
-
-
-
 
