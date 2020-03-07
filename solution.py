@@ -71,23 +71,6 @@ class RoutPlanner:
         self.collet_mode = True
         self.rad = rad
         self.thrust = 100
-        self.rad2dev = [(45000, 5),
-                        (23000, 10),
-                        (16000, 15),
-                        (11500, 20),
-                        (8600, 25),
-                        (6700, 30),
-                        (5200, 35),
-                        (4350, 40),
-                        (3500, 45),
-                        (2800, 50),
-                        (2200, 55),
-                        (1760, 60),
-                        (1390, 65),
-                        (1100, 70),
-                        (980, 75),
-                        (970, 80)]
-        self.rad2dev.reverse()
 
     def add_station(self, p):
         if len(self.stations) and p == self.stations[0]:
@@ -96,15 +79,12 @@ class RoutPlanner:
             self.stations.append(p)
 
     def plan(self, pos, angle, target, last_pos):
-        self.rad = 500
         i = self.stations.index(target)
         if i != 0:
             self.stations = self.stations[i:] + self.stations[:i]
         p1 =(self.rad, 0.)
-        #h = np.angle(pos[0] + pos[1]*1j, deg=True) + angle
         traj = np.array(pos) - np.array(last_pos)
         h = np.angle(traj[0] + traj[1]*1j, deg=True)
-        print("traj={} h={}".format(traj, h), file=sys.stderr)
         p1 = rotate(p1, degrees=h)
         p1 = np.array(p1) + np.array(pos)
         p21 = np.array(pos) - np.array(target)
@@ -119,24 +99,7 @@ class RoutPlanner:
         verts = [pos, p1, p2, target]
         return bezier_curve(verts, nTimes=30)
 
-    def calc_dev(self, r, fac=1.0):
-        for (calr1, dev1),(calr2, dev2) in zip(self.rad2dev[:-1], self.rad2dev[1:]):
-            calr1 *= fac
-            calr2 *= fac
-            if r >= calr1 and r < calr2:
-                f = float(r - calr1)/float(calr2 - calr1)
-                ang = f * dev1 + (1.0 - f) * dev2
-                print ("dev = " + str(ang), file=sys.stderr)
-
-        if ang > 30 and self.thrust == 100:
-            self.thrust = 50
-            return self.calc_dev(r, 0.5)
-        else:
-            self.thrust = 100
-        return ang
-
     def calc_direction(self, pos, angle, target, last_pos):
-        self.thrust = 100
         xvals, yvals = self.plan(pos, angle, target, last_pos)
         print ("pos={}, x0={} y0={}".format(pos, xvals[0], yvals[0]), file=sys.stderr)
         c, r = circ_rad(pos,
@@ -145,20 +108,10 @@ class RoutPlanner:
 
         pc = np.array([xvals[0] - pos[0], yvals[0] - pos[1]])
         crel = np.array(c) - np.array(pos)
-        d = np.cross(pc, crel)
-        dev = self.calc_dev(r)
 
-        if d < 0:
-            dev = -dev
-        print("c = {} r = {} dev={} d={}".format(c,r,dev,d ), file=sys.stderr)
-        print (pos, file=sys.stderr)
         pc = pc / linalg.norm(pc)
-        print ("pc0={}".format(pc), file=sys.stderr)
-        pc = rotate(pc, degrees=dev)
-        print ("pc1={}".format(pc), file=sys.stderr)
         pc *= 300
         pc = pos + pc
-        print ("using bezier", file=sys.stderr)
         return pc, self.thrust, False
 
 class Naive:
@@ -189,22 +142,20 @@ class Naive:
         ax = math.atan(300.0/float(dist)) * 180 / 3.141
 
         boost = False
-        if not opt:
-            thrust = 100
+        thrust = 100
         aangle = math.fabs(angle)
         eangle = aangle - ax
         print ("--" + str(eangle) + " " + str(dist), file=sys.stderr)
 
         #if eangle > 0 and not opt:
         #    thrust = int(100 * ( 1.0 -  eangle/60.))
-        if not opt:
-            if dist < 2800:
-                thrust = 50
-            if dist > 8000 and eangle < 5 and not self.boosted:
-                boost = True
-                self.boosted = True
-            if eangle > 3 and dist < 2000:
-                thrust = 10
+        if dist < 2800:
+            thrust = 50
+        if dist > 8000 and eangle < 5 and not self.boosted:
+            boost = True
+            self.boosted = True
+        if eangle > 3 and dist < 2000:
+            thrust = 10
         return target, thrust, boost
 
 class calib_circ:
@@ -232,7 +183,7 @@ class calib_circ:
         return target, 50, False
 
 if __name__ == "__main__":
-    calib = True
+    calib = False
     lnx, lny = -1, -1
     n = 0
     hist = []
