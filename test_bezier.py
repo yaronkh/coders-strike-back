@@ -2,9 +2,10 @@
 
 import math
 import matplotlib.pyplot as plt
-from solution import *
+import solution
 
-rp = RoutPlanner(500.0)
+rp = solution.RoutPlanner(500.0)
+print (rp)
 rp.add_station((0, 0))
 rp.add_station((1200, 0))
 rp.add_station((600, 600))
