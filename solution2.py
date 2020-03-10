@@ -18,21 +18,37 @@ def circ_rad(p, q, r):
     r = ar*br*cr / math.sqrt((ar+br+cr)*(-ar+br+cr)*(ar-br+cr)*(ar+br-cr))
     return (px, py), r
 
-def half_angle(p1, p2, p3):
+def rotate(p, origin=(0, 0), degrees=0):
+    angle = np.deg2rad(degrees)
+    R = np.array([[np.cos(angle), -np.sin(angle)],
+        [np.sin(angle),  np.cos(angle)]])
+    o = np.atleast_2d(origin)
+    p = np.atleast_2d(p)
+    return np.squeeze((R @ (p.T-o.T) + o.T).T)
+
+def calc_node_approach(p1, p2, p3, rad):
     p21 = np.array(p1) - np.array(p2)
     p21 = p21 / linalg.norm(p21)
     p23 = np.array(p3) - np.array(p2)
     p23 = p23 / linalg.norm(p23)
     angle = np.math.atan2(np.linalg.det([p21,p23]),np.dot(p21,p23))
-    angle = np.degrees(angle)
-    ph = p21 + p23
-    ph = ph / linalg.norm(ph)
-    return (ph[0], ph[1]), angle
+    angle_deg = np.degrees(angle)
+    pivot = p21 + p23
+    pivot = (pivot / linalg.norm(pivot)) * rad
+    par1 = pivot * ( 1 - np.cos(angle / 2.0))
+    cross = np.cross(p23, p21)
+    rot90 = 90 if cross > 0 else -90
+    ppepend = rotate(pivot, degrees=rot90)
+    ppepend = ppepend / linalg.norm(ppepend)
+    ppepend = ppepend * rad * np.sin(angle / 2.0)
+    target = ppepend + par1
+    target0 = ppepend + ((-1)*par1)
+    target += np.array(p2)
+    target0 += np.array(p1)
+    pivot = pivot + np.array(p2)
+    return (pivot[0], pivot[1]), ((target0[0], target0[1]), (target[0], target[1])), angle
 
-def calc_pivot_point(p1, p2, p3, r):
-    ph, angle = half_angle(p1, p2, p3)
-
-class BrakeBeforeTarget:
+class BreakBeforeTarget:
     def __init__(self):
         pass
 
@@ -51,6 +67,59 @@ class CurvatureThustStrategy:
         elif self.thrust < 20:
             self.thrust = 20
         return self.thrust
+
+def closest_point_to_segment(p, q, x):
+    """
+    return the closest point (as coefficient) from point x to line p-q
+    """
+    x = np.array(x)
+    q = np.array(q)
+    p = np.array(p)
+    v = q - p
+    s = x - p
+    alpha = np.dot(s, v)/np.dot(v, v)
+    return alpha
+
+
+class Planner:
+    def __init__(self, fac):
+        self.fac = fac
+        self.pivot = (0, 0)
+        self.curve_st = [(0, 0), (0, 0)]
+        self.r100 = 1200
+        self.state = 0
+        self.stations = []
+        self.thrust_stg = CurvatureThustStrategy()
+        self.thrust, self.thrust2 = 0, 0
+
+    def plan(self, post, dist, angle, target, stations):
+        x1 = stations[-1][0]
+        y1 = stations[-1][1]
+        x2 = stations[0][0]
+        y2 = stations[0][1]
+        d = math.sqrt((x2 - x1)*(x2 - x1) + (y2 - y1)*(y2 - y1))
+        if d > (2 * self.r100 + 600):
+            rad = self.r100
+        else:
+            rad = (d - 600) / 2.0
+        self.fac = rad / d
+        self.pivot, self.curve_st, self.angle = calc_node_approach(stations[-1], stations[0], stations[1], rad)
+        self.state = 0
+        self.stations = stations
+        self.thrust2 = self.curve_st(rad)
+        self.thrust = 100
+        self.max_alpha = 1.0 + 300.0 / d
+
+    def act(self, post, dist, angle, target, last_pos, p_center, rad):
+        alpha = closest_point_to_segment(self.stations[-1], self.stations[0])
+        if alpha < self.fac:
+            return self.stations[0], self.thrust2, False
+        elif alpha < (1.0 - self.fac):
+            return self.stations[1], self.thrust, False
+        elif alpha <= self.max_alpha:
+            return target, self.thrust2, False
+        else:
+            return target, 30, False
 
 class Collector:
     def __init__(self):
