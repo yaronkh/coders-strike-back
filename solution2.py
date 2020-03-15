@@ -1,4 +1,5 @@
 import sys
+import time
 import math
 import numpy as np
 from numpy import linalg
@@ -11,6 +12,8 @@ class Params:
     minimal_straight_dist = 1000.
     break_dist = 0
     break_fac = 0.25
+    chase_max = 2000
+    chase_max_angle = 5
 
 def circ_rad(p, q, r):
     (x1, y1), (x2, y2), (x3, y3) = p, q, r
@@ -43,6 +46,8 @@ def calc_node_approach(p1, p2, p3, rad):
     #calculate the angle of stations2
     angle = np.math.atan2(np.linalg.det([p21,p23]),np.dot(p21,p23))
     angle_deg = np.degrees(angle)
+    print("ANGLE={}".format(angle_deg), file=sys.stderr)
+    extra_fac = 0
     if angle_deg > 175.0 or angle_deg < -175:
         t_pivot = p21 * rad + np.array(p2)
         target = p2
@@ -60,8 +65,10 @@ def calc_node_approach(p1, p2, p3, rad):
         break_vec = p21 * Params.break_dist
         target = t_pivot + direct + break_vec
         target0 = target + p21 * Params.minimal_straight_dist
-    fac1 = closest_point_to_segment(p1, p2, target) - Params.break_fac
-    fac0 = closest_point_to_segment(p1, p2, target0) - Params.break_fac
+    if math.fabs(angle_deg) < 51:
+        extra_fac = 0.3
+    fac1 = closest_point_to_segment(p1, p2, target) - (Params.break_fac + extra_fac)
+    fac0 = closest_point_to_segment(p1, p2, target0) - (Params.break_fac + extra_fac)
 
     return (t_pivot[0], t_pivot[1]), ((target0[0], target0[1]), (target[0], target[1])), (fac0, fac1), angle_deg
 
@@ -136,7 +143,14 @@ class Planner:
         elif alpha < self.rfacs[1]:
             return self.curve_st[1], 60, False
         elif alpha <= self.max_alpha:
-            thrust = 50 if angle > 1 else 90
+            thrust = 50 if angle > 1 else 100
+            if dist < 4000:
+                thrust = 80 if angle < 3 else 50
+            if angle > 90:
+                thrust = 20
+            elif angle > 45:
+                thrust = 30
+
             return target, thrust, False
         else:
             thrust = 30 if angle > 3 else 100
@@ -158,6 +172,7 @@ class Clash:
 
 class BlindPlanner:
     def __init__(self):
+        self.is_chasing = False
         pass
 
     def plan(self, post, dist, angle, target, stations):
@@ -168,11 +183,66 @@ class BlindPlanner:
         if dist > 7000 and angle < 5:
             boost = True
             thrust = 100
-        elif dist < 2800:
-            thrust = 80 if angle < 1 else 50
+        elif dist < 4000:
+            thrust = 80 if angle < 3 else 50
+            if angle > 90:
+                thrust = 20
+            elif angle > 45:
+                thrust = 30
         else:
             thrust = 100
+        #if self.is_chasing and target != self.chasing_targ:
+        #     self.is_chasing = False
+        #if self.is_chasing or Opponent.me.is_chasing(Opponent.other, target):
+        #    print ("CHASING!!!!!!!!!!!!", file=sys.stderr)
+        #    self.is_chasing = True
+        #    self.chasing_targ = target
+        #    return opponent_pos, 100, True
+        print ("NOT CHASING", file=sys.stderr)
         return target, thrust, boost
+
+class Opponent:
+    me = None
+    other = None
+
+    def __init__(self):
+        self.pos = []
+        self.dir = (-1, -1)
+        self.vel = (-1, -1)
+
+    def report_pos(self, pos):
+        self.pos.append(pos)
+        if len(self.pos) > 10:
+            self.pos = self.pos[1:]
+        if len(self.pos) >= 2:
+            self.vel = np.array(self.pos[-1]) - np.array(self.pos[-2])
+            self.dir = self.vel / linalg.norm(self.dir)
+
+    def dist(self, target):
+        if len(self.pos) == 0:
+            return 9999999999
+
+        mx, my = self.pos[-1]
+        tx, ty = target
+        return math.sqrt((mx - tx)**2 + (my - ty)**2)
+
+    def is_chasing(self, other, target):
+        if len(self.pos) < 2 or len(other.pos) < 2:
+            return False
+
+        if self.dist(other.pos[-1]) > Params.chase_max:
+            return False
+
+        if self.dist(target) < other.dist(target):
+            return False
+
+        p1 = np.array(self.dir)
+        p2 = np.array(other.dir)
+        angle = np.math.atan2(np.linalg.det([p1, p2]),np.dot(p1, p2))
+        angle_deg = np.degrees(angle)
+        if math.fabs(angle_deg) > Params.chase_max_angle:
+            return False
+        return True
 
 class Collector:
     def __init__(self):
@@ -185,8 +255,12 @@ class Collector:
         self.thrustStrategies = []
         self.lap = 1
         self.stat_in_lap = 0
+        self.opponent_pos = []
 
     def act(self, pos, dist, angle, target, opponent_pos):
+        #if self.clash and self.collecting:
+        #    self.clash = False
+        #    self.algo = BlindPlanner()
         if self.last_target != target:
             self.stat_in_lap += 1
             print ("STATION={}".format(self.stat_in_lap), file=sys.stderr)
@@ -242,6 +316,8 @@ if __name__ == "__main__":
     hist = []
     opt = False
     algo = calib_circ(45) if calib else Collector()
+    Opponent.me = Opponent()
+    Opponent.other = Opponent()
 
     # game loop
     while True:
@@ -251,16 +327,18 @@ if __name__ == "__main__":
         # next_checkpoint_y: y position of the next check point
 
         inp = [int(i) for i in input().split()]
-
         i = -1
 
         x, y, nx, ny, dist, angle = inp
+        Opponent.me.report_pos((x, y))
 
         ox, oy = [int(i) for i in input().split()]
+        Opponent.other.report_pos((ox, oy))
         target, thrust, boost = algo.act((x, y), dist, angle, (nx, ny), (ox, oy))
 
         if boost:
             print(str(int(target[0])) + " " + str(int(target[1]))+ " BOOST")
         else:
             print(str(int(target[0])) + " " + str(int(target[1]))+ " " + str(thrust))
+
 
