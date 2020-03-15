@@ -97,7 +97,6 @@ def closest_point_to_segment(p, q, x):
     alpha = np.dot(s, v)/np.dot(v, v)
     return alpha
 
-
 class Planner:
     def __init__(self):
         self.pivot = (0, 0)
@@ -130,16 +129,32 @@ class Planner:
         self.thrust = 100
         self.max_alpha = 1.0 + 300.0 / d
 
-    def act(self, pos, dist, angle, target, last_pos, p_center, rad):
+    def act(self, pos, dist, angle, target, last_pos, p_center, rad, opponent_pos):
         alpha = closest_point_to_segment(self.stations[-1], self.stations[0], pos)
         if alpha < self.rfacs[0]:
             return self.curve_st[0], self.thrust2, False
         elif alpha < self.rfacs[1]:
             return self.curve_st[1], 60, False
         elif alpha <= self.max_alpha:
-            return target, 50, False
+            thrust = 50 if angle > 1 else 90
+            return target, thrust, False
         else:
-            return target, 30, False
+            thrust = 30 if angle > 3 else 100
+            return target, thrust, False
+
+class Clash:
+    def __init__(self):
+        self.dist = -1
+
+    def plan(self, post, dist, angle, target, stations):
+        pass
+
+    def act(self, pos, dist, angle, target, last_pos, p_center, rad, opponent_pos):
+        ox , oy = opponent_pos
+        mx, my = pos
+        self.dist = math.sqrt((ox - mx)*(ox - mx) + (oy - my)*(oy - my))
+        print ("CLASH DIST={}".format(self.dist), file=sys.stderr)
+        return opponent_pos, 100, True
 
 class BlindPlanner:
     def __init__(self):
@@ -148,13 +163,13 @@ class BlindPlanner:
     def plan(self, post, dist, angle, target, stations):
         pass
 
-    def act(self, post, dist, angle, target, last_pos, p_center, rad):
+    def act(self, post, dist, angle, target, last_pos, p_center, rad, opponent_pos):
         boost = False
         if dist > 7000 and angle < 5:
             boost = True
             thrust = 100
         elif dist < 2800:
-            thrust = 50
+            thrust = 80 if angle < 1 else 50
         else:
             thrust = 100
         return target, thrust, boost
@@ -165,12 +180,13 @@ class Collector:
         self.collecting = True
         self.last_target = (-1, -1)
         self.last_pos = []
-        self.algo = BlindPlanner()
+        self.algo = Clash()
+        self.clash = True
         self.thrustStrategies = []
         self.lap = 1
         self.stat_in_lap = 0
 
-    def act(self, pos, dist, angle, target):
+    def act(self, pos, dist, angle, target, opponent_pos):
         if self.last_target != target:
             self.stat_in_lap += 1
             print ("STATION={}".format(self.stat_in_lap), file=sys.stderr)
@@ -199,7 +215,10 @@ class Collector:
             p_center, rad = circ_rad(self.last_pos[-2], self.last_pos[-1], pos)
         else:
             p_center, rad = (0., 0.), 23000
-        new_target, thrust, boost = self.algo.act(pos, dist, angle, target, self.last_pos, p_center, rad)
+        new_target, thrust, boost = self.algo.act(pos, dist, angle, target, self.last_pos, p_center, rad, opponent_pos)
+        if self.clash and self.collecting and self.algo.dist > 2000:
+            self.clash = False
+            self.algo = BlindPlanner()
         if not self.collecting and self.last_target != target:
             print ("ROTATING", file=sys.stderr)
             self.stations = self.stations[1:] +[self.stations[0]]
@@ -237,8 +256,8 @@ if __name__ == "__main__":
 
         x, y, nx, ny, dist, angle = inp
 
-        [int(i) for i in input().split()]
-        target, thrust, boost = algo.act((x, y), dist, angle, (nx, ny))
+        ox, oy = [int(i) for i in input().split()]
+        target, thrust, boost = algo.act((x, y), dist, angle, (nx, ny), (ox, oy))
 
         if boost:
             print(str(int(target[0])) + " " + str(int(target[1]))+ " BOOST")
