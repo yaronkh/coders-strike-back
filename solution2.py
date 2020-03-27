@@ -11,9 +11,65 @@ class Params:
     dist_break_distance = 1800.
     minimal_straight_dist = 1000.
     break_dist = 0
-    break_fac = 0.25
+    break_fac = 0.30
     chase_max = 2000
     chase_max_angle = 5
+    side_puch_distance = 1000
+    side_punch_max_angle = 45
+    num_punchs = 0
+    Kp = 0.1
+    Ki = 0
+    Kd = 0
+    vel_const = 8.2
+
+def to_array(p):
+    return np.array((p[0], p[1]))
+
+def direct(p1, p2):
+    p = p2 - p1
+    return p / linalg.norm(p)
+
+def rel_angle(p1, p2):
+    return np.math.atan2(np.linalg.det([p1, p2]),np.dot(p1, p2))
+
+def get_intersect(a1, a2, b1, b2):
+    """
+    Returns the point of intersection of the lines passing through a2,a1 and b2,b1.
+    a1: [x, y] a point on the first line
+    a2: [x, y] another point on the first line
+    b1: [x, y] a point on the second line
+    b2: [x, y] another point on the second line
+    """
+    s = np.vstack([a1,a2,b1,b2])        # s for stacked
+    h = np.hstack((s, np.ones((4, 1)))) # h for homogeneous
+    l1 = np.cross(h[0], h[1])           # get first line
+    l2 = np.cross(h[2], h[3])           # get second line
+    x, y, z = np.cross(l1, l2)          # point of intersection
+    if z == 0:                          # lines are parallel
+        return (float('inf'), float('inf'))
+    return (x/z, y/z)
+
+def find_rad_from_two_points_and_tangent(p1, tang, p2):
+    """
+    p1 - point on the circle
+    tang - direction vector relative to p1
+    p2 - point on the circle
+    """
+    p1 = np.array(p1)
+    p2 = np.array(p2)
+    p3 = (p1 + p2) / 2.0
+    p31 = (p1 - p3)
+    a = np.angle(rel_angle(tang, p31))
+    print ("rel_angle={}".format(a), file=sys.stderr)
+    if a < 3.0 or a > 177.0 or a < -177.0:
+        return 23000, (-1, -1)
+    p4 = rotate(p31, degrees=90) + p3
+    pend = rotate(tang, degrees=90)
+    p5 = p1 + pend
+    c = get_intersect((p1[0], p1[1]), (p5[0], p5[1]), (p3[0], p3[1]), (p4[0], p4[1]))
+    dx = p1[0] - c[0]
+    dy = p1[1] - c[1]
+    return math.sqrt(dx*dx + dy*dy), c
 
 def circ_rad(p, q, r):
     (x1, y1), (x2, y2), (x3, y3) = p, q, r
@@ -21,6 +77,8 @@ def circ_rad(p, q, r):
     a = (x2-x3)**2 + (y2-y3)**2
     b = (x3-x1)**2 + (y3-y1)**2
     s = 2*(a*b + b*c + c*a) - (a*a + b*b + c*c)
+    if s == 0.0:
+        return (0, 0), 100000.
     px = (a*(b+c-a)*x1 + b*(c+a-b)*x2 + c*(a+b-c)*x3) / s
     py = (a*(b+c-a)*y1 + b*(c+a-b)*y2 + c*(a+b-c)*y3) / s
     ar = math.sqrt(a)
@@ -115,8 +173,15 @@ class Planner:
         self.thrust, self.thrust2 = 0, 0
         self.rfacs = (0, 0)
         self.rad = 0
+        self.regulator = PIDThrustRegulator()
+        self.punch_mode = False
+        self.num_punch = Params.num_punchs
 
-    def plan(self, post, dist, angle, target, stations):
+
+    def plan(self, pos, dist, angle, target, stations):
+        self.regulator.reset()
+        self.punch_mode = False
+        self.num_punch = Params.num_punchs
         x1 = stations[-1][0]
         y1 = stations[-1][1]
         x2 = stations[0][0]
@@ -132,35 +197,47 @@ class Planner:
         print ("RES: pivpt={},st={},facts={},angle={}".format(self.pivot, self.curve_st, self.rfacs, self.angle), file=sys.stderr)
         self.state = 0
         self.stations = stations
-        self.thrust2 = 100
-        self.thrust = 100
+        #self.thrust2 = 100
+        #self.thrust = 100
         self.max_alpha = 1.0 + 300.0 / d
 
     def act(self, pos, dist, angle, target, last_pos, p_center, rad, opponent_pos):
         alpha = closest_point_to_segment(self.stations[-1], self.stations[0], pos)
+        if dist > 1200 and self.num_punch > 0 and not self.punch_mode and Opponent.me.can_deliver_puch(Opponent.other, target, angle):
+            print ("PUNCH!!!!!!", file=sys.stderr)
+            self.num_punch -= 1
+            if self.num_punch == 0:
+                self.punch_mode = True
+            return Opponent.other.next_pos(), 100, True
         if alpha < self.rfacs[0]:
-            return self.curve_st[0], self.thrust2, False
+            thrust = self.regulator.act(self.curve_st[0], angle)
+            #return self.curve_st[0], self.thrust2, False
+            return self.curve_st[0], thrust, False
         elif alpha < self.rfacs[1]:
-            return self.curve_st[1], 60, False
+            thrust = self.regulator.act(self.curve_st[1], angle)
+            return self.curve_st[1], thrust, False
         elif alpha <= self.max_alpha:
-            thrust = 50 if angle > 1 else 100
-            if dist < 4000:
-                thrust = 80 if angle < 3 else 50
-            if angle > 90:
-                thrust = 20
-            elif angle > 45:
-                thrust = 30
+            #angle = math.fabs(angle)
+            #thrust = 50 if angle > 45 else 100
+            #if dist < 4000:
+            #    thrust = 100 if angle < 2 else 65
+            #if angle > 90:
+            #    thrust = 20
+            #elif angle > 45:
+            #    thrust = 30
 
+            thrust = self.regulator.act(target, angle)
             return target, thrust, False
         else:
-            thrust = 30 if angle > 3 else 100
+            #thrust = 30 if angle > 3 else 100
+            thrust = self.regulator.act(target, angle)
             return target, thrust, False
 
 class Clash:
     def __init__(self):
         self.dist = -1
 
-    def plan(self, post, dist, angle, target, stations):
+    def plan(self, pos, dist, angle, target, stations):
         pass
 
     def act(self, pos, dist, angle, target, last_pos, p_center, rad, opponent_pos):
@@ -173,24 +250,35 @@ class Clash:
 class BlindPlanner:
     def __init__(self):
         self.is_chasing = False
+        self.punch_mode = True
+        self.regulator = PIDThrustRegulator()
         pass
 
-    def plan(self, post, dist, angle, target, stations):
+    def plan(self, pos, dist, angle, target, stations):
+        self.regulator.reset()
+        self.punch_mode = True
         pass
 
-    def act(self, post, dist, angle, target, last_pos, p_center, rad, opponent_pos):
+    def act(self, pos, dist, angle, target, last_pos, p_center, rad, opponent_pos):
         boost = False
-        if dist > 7000 and angle < 5:
-            boost = True
-            thrust = 100
-        elif dist < 4000:
-            thrust = 80 if angle < 3 else 50
-            if angle > 90:
-                thrust = 20
-            elif angle > 45:
-                thrust = 30
-        else:
-            thrust = 100
+        angle_ = math.fabs(angle)
+        thrust = self.regulator.act(target, angle)
+        #if dist > 7000 and angle_ < 5:
+        #    boost = True
+        #    thrust = 100
+        #elif dist < 2000:
+        #    thrust = 80 if angle_ < 10 else 50
+        #    if angle_ > 90:
+        #        thrust = 20
+        #    elif angle_ > 45:
+        #        thrust = 30
+        #else:
+        #    thrust = 100
+
+        if not self.punch_mode and Opponent.me.can_deliver_puch(Opponent.other, target, angle):
+            print ("PUNCH!!!!!!", file=sys.stderr)
+            self.punch_mode = False
+            return Opponent.other.next_pos(), 100, True
         #if self.is_chasing and target != self.chasing_targ:
         #     self.is_chasing = False
         #if self.is_chasing or Opponent.me.is_chasing(Opponent.other, target):
@@ -198,8 +286,75 @@ class BlindPlanner:
         #    self.is_chasing = True
         #    self.chasing_targ = target
         #    return opponent_pos, 100, True
-        print ("NOT CHASING", file=sys.stderr)
+        print ("NOT PUNCHING {}".format(self.punch_mode), file=sys.stderr)
         return target, thrust, boost
+
+class PIDThrustRegulator:
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.e = 0
+        self.last_e = 0
+        self.ie = 0
+        self.dedt = 0
+        self.thrust = 100
+
+    def act(self, target, angle):
+        self.e, r_a = self.error(target, angle)
+        self.ie += self.e
+        self.dedt = self.last_e - self.e
+        thrust = self.thrust + math.fabs(math.sin(r_a))*(Params.Kp*self.e + Params.Ki*self.ie + Params.Kd*self.dedt)
+        self.last_e = self.e
+        print("PID thrust={} e={}".format(thrust, self.e), file=sys.stderr)
+        if thrust > 100.0:
+            thrust = 100.0
+        elif thrust < 0:
+            thrust = 0
+        self.thrust = int(thrust)
+        return self.thrust
+
+    def calc_radial_thrust(self, pos, c, target, angle):
+        c = to_array(c)
+        pos = to_array(pos)
+        target = to_array(target)
+        p_pos_target = direct(pos, target)
+        p_head = rotate(p_pos_target, degrees=angle)
+        p_pos_c = direct(pos, c)
+        print ("p_head={},p_pos_c={}".format(p_head, p_pos_c), file=sys.stderr)
+        rel_ang = rel_angle(p_head, p_pos_c)
+        rel_ang_deg = np.degrees(rel_ang)
+        radial_thrust = self.thrust * math.cos(rel_ang)
+        print ("rel_ang={}, thrust={}, radial_thrust={}".format(rel_ang_deg, self.thrust, radial_thrust), file=sys.stderr)
+        return rel_ang
+
+    def error(self, target, angle):
+        target = np.array(target)
+        pos = np.array(Opponent.me.pos[-1])
+        targ_dir = target - pos
+        targ_dir = targ_dir / linalg.norm(targ_dir)
+        my_dir = Opponent.me.dir
+        if not Opponent.me.has_dir or len(Opponent.me.pos) < 3:
+            error = 0
+            r_a = 0
+        else:
+            pos0 = Opponent.me.pos[-3]
+            pos1 = Opponent.me.pos[-2]
+            pos2 = Opponent.me.pos[-1]
+            #_, cur_rad = circ_rad( pos0, pos1, pos2)
+            vel = linalg.norm(Opponent.me.vel)
+            rad, c = find_rad_from_two_points_and_tangent((pos[0], pos[1]), (my_dir[0], my_dir[1]), target)
+            vel_targ = Params.vel_const * math.sqrt(rad)
+            r_a = self.calc_radial_thrust(pos, c, target, angle)
+            #dist = linalg.norm(pos - target)
+            print("vel={} vel_targ={} rad={}".format(vel, vel_targ, rad), file=sys.stderr)
+            #error = np.math.atan2(np.linalg.det([my_dir, targ_dir]),np.dot(my_dir, targ_dir))
+            #if rad > 23000:
+            #    rad = 23000
+            #if cur_rad > 23000:
+            #    cur_rad = 23000
+            error = vel_targ - vel
+        return error, r_a
 
 class Opponent:
     me = None
@@ -207,8 +362,9 @@ class Opponent:
 
     def __init__(self):
         self.pos = []
-        self.dir = (-1, -1)
-        self.vel = (-1, -1)
+        self.dir = None
+        self.has_dir = False
+        self.vel = None
 
     def report_pos(self, pos):
         self.pos.append(pos)
@@ -216,7 +372,8 @@ class Opponent:
             self.pos = self.pos[1:]
         if len(self.pos) >= 2:
             self.vel = np.array(self.pos[-1]) - np.array(self.pos[-2])
-            self.dir = self.vel / linalg.norm(self.dir)
+            self.dir = self.vel / linalg.norm(self.vel)
+            self.has_dir = True
 
     def dist(self, target):
         if len(self.pos) == 0:
@@ -225,6 +382,48 @@ class Opponent:
         mx, my = self.pos[-1]
         tx, ty = target
         return math.sqrt((mx - tx)**2 + (my - ty)**2)
+
+    def face_dir(self, angle, target):
+        r_target = np.array(target) - np.array(self.pos[-1])
+        r_target = r_target / linalg.norm(r_target)
+        x_dir = np.array([1, 0])
+        targ_ang = np.math.atan2(np.linalg.det([x_dir, r_target]),np.dot(x_dir, r_target))
+        targ_ang = np.degrees(targ_ang)
+        print ("targ_ang={}".format(targ_ang), file=sys.stderr)
+        res = targ_ang - angle
+        if res > 180:
+            res = res - 360
+        elif res < -180:
+            res = 360 + res
+        return res
+
+    def can_deliver_puch(self, other, target, angle):
+        d_to_other = self.dist(other.pos[-1])
+        print ("DISTANCE={}".format(d_to_other), file=sys.stderr)
+        if d_to_other > Params.side_puch_distance:
+                return False
+        fc_dir = self.face_dir(angle, target)
+        fdir = self.direction(other)
+        rel_angle = math.fabs(fc_dir - fdir)
+        print ("ABD ANGLE={} angle={} fc_dir={} fdir={}".format(rel_angle, angle, fc_dir, fdir), file=sys.stderr)
+        if rel_angle <= Params.side_punch_max_angle:
+            print ("MAY PUNCH", file=sys.stderr)
+            return True
+
+        return False
+
+    def next_pos(self):
+        npos = np.array(self.pos[-1]) + np.array(self.vel)
+        return npos[0], npos[1]
+
+    def direction(self, other):
+        p1 = np.array(self.pos[-1]) + np.array(self.vel)
+        p2 = np.array(other.pos[-1]) + np.array(other.vel)
+        p = p2 - p1
+        x = np.array([1, 0])
+        angle = np.math.atan2(np.linalg.det([x, p]),np.dot(x, p))
+        angle_deg = np.degrees(angle)
+        return angle_deg
 
     def is_chasing(self, other, target):
         if len(self.pos) < 2 or len(other.pos) < 2:
@@ -244,6 +443,51 @@ class Opponent:
             return False
         return True
 
+class Arena:
+    def __init__(self, name, stations):
+        self.name = name
+        self.stations = stations
+
+    def point_in_track(self, p):
+        for ps in self.stations:
+            if math.fabs(p[0] - ps[0]) < 70 and math.fabs(ps[1] - ps[1]) < 70:
+                return True
+        return False
+
+class ArenaDetector:
+    tracks = [Arena("hostile", [(13890, 1958), (8009, 3263), (2653, 7002), (10035, 5969)]),
+              Arena("pyramid", [(7637, 5988), (3133, 7544), (9544, 4408), (14535, 7770), (6312, 4294), (7782, 851)]),
+              Arena("triangle",[(6012, 5376), (11308, 2847), (7482, 6917)]),
+              Arena("dalton", [(9589, 1395), (3618, 4434), (8011, 7920), (13272, 5530)]),
+              Arena("makbilit", [(12942, 7222), (5655, 2587), (4107, 7431), (13475, 2323)]),
+              Arena("arrow", [(10255, 4946), (6114, 2172), (3048, 5194), (6276, 7762), (14119, 7768), (13897, 1216)]),
+              Arena("Shosh",  [(9116, 1857), (5007, 5288), (11505, 6074)]),
+              Arena("Til",  [(10558, 5973), (3565, 5194), (13578, 7574), (12430, 1357)]),
+              Arena("trapez",  [(11201, 5443), (7257, 6657), (5452, 2829), (10294, 3341)]),
+              Arena("Mehumash", [(4049, 4630), (13054, 1928), (6582, 7823), (7494, 1330), (12701, 7080)]),
+              Arena("Trampoline",  [(3307, 7251), (14572, 7677), (10588, 5072), (13100, 2343), (4536, 2191), (7359, 4930)]),
+              Arena("Zigzag", [(10660, 2295), (8695, 7469), (7225, 2174), (3596, 5288), (13862, 5092)])
+            ]
+    def __init__(self):
+        self.detected_track = None
+        pass
+
+    def try_detect(self, stations):
+        num_tracks = 0
+
+        for track in ArenaDetector.tracks:
+            detected = True
+            for s in stations:
+                if not track.point_in_track(s):
+                    detected = False
+                    break
+            if detected:
+                print ("Arena detected: {}".format(track.name), file=sys.stderr)
+                num_tracks += 1
+                self.detected_track = track
+        if num_tracks == 1:
+            return self.detected_track
+
 class Collector:
     def __init__(self):
         self.stations = []
@@ -256,9 +500,11 @@ class Collector:
         self.lap = 1
         self.stat_in_lap = 0
         self.opponent_pos = []
+        self.arena_detector = ArenaDetector()
 
     def act(self, pos, dist, angle, target, opponent_pos):
         #if self.clash and self.collecting:
+        #if dist > 7000 and self.clash and self.collecting:
         #    self.clash = False
         #    self.algo = BlindPlanner()
         if self.last_target != target:
@@ -269,6 +515,11 @@ class Collector:
             self.collecting = False
             self.lap = 1
             print ("COLLECTED: {}".format(self.stations), file=sys.stderr)
+            arena = self.arena_detector.try_detect(self.stations)
+            if arena is not None:
+                print ("Arena detected: {}".format(arena.name), file=sys.stderr)
+            else:
+                print("ARENA NOT DETECTED", file=sys.stderr)
             self.algo = Planner()
 
         if self.collecting and self.last_target != target:
