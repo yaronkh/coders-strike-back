@@ -6,21 +6,39 @@ from numpy import linalg
 from scipy.special import comb
 
 class Params:
-    r100 = 1800.
-    thrust_rad_100 = 3300.
-    dist_break_distance = 1800.
-    minimal_straight_dist = 1000.
-    break_dist = 0
-    break_fac = 0.30
-    chase_max = 2000
-    chase_max_angle = 5
-    side_puch_distance = 1000
-    side_punch_max_angle = 45
-    num_punchs = 0
-    Kp = 0.1
-    Ki = 0
-    Kd = 0
-    vel_const = 8.2
+    def __init__(self):
+        self.r1planner = Planner()
+        self.r100 = 1800.
+        self.thrust_rad_100 = 3300.
+        self.dist_break_distance = 0
+        self.minimal_straight_dist = 1000.
+        self.break_dist = 0
+        self.break_fac = 0.30
+        self.chase_max = 2000
+        self.chase_max_angle = 5
+        self.side_puch_distance = 1000
+        self.side_punch_max_angle = 45
+        self.num_punchs = 0
+        self.Kp = 0.1
+        self.Ki = 0
+        self.Kd = 0
+        self.vel_const = 8.2
+
+
+class ShoshParams(Params):
+    def __init__(self):
+        Params.__init__(self)
+        self.dist_break_distance = 1000
+
+class TrampolineParams(Params):
+    def __init__(self):
+        Params.__init__(self)
+        self.dist_break_distance = 2500
+
+class MacbilitParams(Params):
+    def __init__(self):
+        Params.__init__(self)
+        self.dist_break_distance = 0
 
 def to_array(p):
     return np.array((p[0], p[1]))
@@ -120,13 +138,13 @@ def calc_node_approach(p1, p2, p3, rad):
         rot90 = 90 if cross < 0 else -90
         #direct is the vector from the curve central point to the rotation start point
         direct = rotate(p21, degrees=rot90) * rad
-        break_vec = p21 * Params.break_dist
+        break_vec = p21 * Hub.params.break_dist
         target = t_pivot + direct + break_vec
-        target0 = target + p21 * Params.minimal_straight_dist
+        target0 = target + p21 * Hub.params.minimal_straight_dist
     if math.fabs(angle_deg) < 51:
         extra_fac = 0.3
-    fac1 = closest_point_to_segment(p1, p2, target) - (Params.break_fac + extra_fac)
-    fac0 = closest_point_to_segment(p1, p2, target0) - (Params.break_fac + extra_fac)
+    fac1 = closest_point_to_segment(p1, p2, target) - (Hub.params.break_fac + extra_fac)
+    fac0 = closest_point_to_segment(p1, p2, target0) - (Hub.params.break_fac + extra_fac)
 
     return (t_pivot[0], t_pivot[1]), ((target0[0], target0[1]), (target[0], target[1])), (fac0, fac1), angle_deg
 
@@ -134,8 +152,10 @@ class BreakBeforeTarget:
     def __init__(self):
         pass
 
-    def get_thrust(self, dist, angle, target, rad):
-        return 50 if dist < Params.dist_break_distance else 100
+    def get_thrust(self, thrust, dist, angle, target, rad):
+        if dist < Hub.params.dist_break_distance:
+            thrust = 50
+        return thrust
 
 class CurvatureThustStrategy:
     def __init__(self):
@@ -143,7 +163,7 @@ class CurvatureThustStrategy:
         pass
 
     def get_thrust(self, dist, angle, target, rad):
-        self.thrust = int(round(rad/Params.thrust_rad_100 * 100))
+        self.thrust = int(round(rad/Hub.params.thrust_rad_100 * 100))
         if self.thrust > 100:
             self.thrust = 100
         elif self.thrust < 20:
@@ -166,7 +186,6 @@ class Planner:
     def __init__(self):
         self.pivot = (0, 0)
         self.curve_st = [(0, 0), (0, 0)]
-        self.r100 = Params.r100
         self.state = 0
         self.stations = []
         self.thrust_stg = CurvatureThustStrategy()
@@ -175,19 +194,21 @@ class Planner:
         self.rad = 0
         self.regulator = PIDThrustRegulator()
         self.punch_mode = False
-        self.num_punch = Params.num_punchs
+        self.breaker = BreakBeforeTarget()
 
 
     def plan(self, pos, dist, angle, target, stations):
+        self.num_punch = Hub.params.num_punchs
+        self.r100 = Hub.params.r100
         self.regulator.reset()
         self.punch_mode = False
-        self.num_punch = Params.num_punchs
+        self.num_punch = Hub.params.num_punchs
         x1 = stations[-1][0]
         y1 = stations[-1][1]
         x2 = stations[0][0]
         y2 = stations[0][1]
         d = math.sqrt((x2 - x1)*(x2 - x1) + (y2 - y1)*(y2 - y1))
-        if d > (2 * self.r100 + Params.minimal_straight_dist):
+        if d > (2 * self.r100 + Hub.params.minimal_straight_dist):
             rad = self.r100
         else:
             rad = (d - 600) / 2.0
@@ -208,14 +229,14 @@ class Planner:
             self.num_punch -= 1
             if self.num_punch == 0:
                 self.punch_mode = True
-            return Opponent.other.next_pos(), 100, True
+            npos, thrust, boost =  Opponent.other.next_pos(), 100, True
         if alpha < self.rfacs[0]:
             thrust = self.regulator.act(self.curve_st[0], angle)
             #return self.curve_st[0], self.thrust2, False
-            return self.curve_st[0], thrust, False
+            npos, thrust, boost = self.curve_st[0], thrust, False
         elif alpha < self.rfacs[1]:
             thrust = self.regulator.act(self.curve_st[1], angle)
-            return self.curve_st[1], thrust, False
+            npos, thrust, boost = self.curve_st[1], thrust, False
         elif alpha <= self.max_alpha:
             #angle = math.fabs(angle)
             #thrust = 50 if angle > 45 else 100
@@ -227,11 +248,13 @@ class Planner:
             #    thrust = 30
 
             thrust = self.regulator.act(target, angle)
-            return target, thrust, False
+            npos, thrust, boost = target, thrust, False
         else:
             #thrust = 30 if angle > 3 else 100
             thrust = self.regulator.act(target, angle)
-            return target, thrust, False
+            npos, thrust, boost = target, thrust, False
+        thrust = self.breaker.get_thrust(thrust, dist, angle, target, rad)
+        return npos, thrust, boost
 
 class Clash:
     def __init__(self):
@@ -248,10 +271,11 @@ class Clash:
         return opponent_pos, 100, True
 
 class BlindPlanner:
-    def __init__(self):
+    def __init__(self, br=True):
         self.is_chasing = False
         self.punch_mode = True
         self.regulator = PIDThrustRegulator()
+        self.breaker = BreakBeforeTarget() if br else None
         pass
 
     def plan(self, pos, dist, angle, target, stations):
@@ -287,6 +311,8 @@ class BlindPlanner:
         #    self.chasing_targ = target
         #    return opponent_pos, 100, True
         print ("NOT PUNCHING {}".format(self.punch_mode), file=sys.stderr)
+        if self.breaker != None:
+            thrust = self.breaker.get_thrust(thrust, dist, angle, target, rad)
         return target, thrust, boost
 
 class PIDThrustRegulator:
@@ -304,7 +330,7 @@ class PIDThrustRegulator:
         self.e, r_a = self.error(target, angle)
         self.ie += self.e
         self.dedt = self.last_e - self.e
-        thrust = self.thrust + math.fabs(math.sin(r_a))*(Params.Kp*self.e + Params.Ki*self.ie + Params.Kd*self.dedt)
+        thrust = self.thrust + math.fabs(math.sin(r_a))*(Hub.params.Kp*self.e + Hub.params.Ki*self.ie + Hub.params.Kd*self.dedt)
         self.last_e = self.e
         print("PID thrust={} e={}".format(thrust, self.e), file=sys.stderr)
         if thrust > 100.0:
@@ -344,7 +370,7 @@ class PIDThrustRegulator:
             #_, cur_rad = circ_rad( pos0, pos1, pos2)
             vel = linalg.norm(Opponent.me.vel)
             rad, c = find_rad_from_two_points_and_tangent((pos[0], pos[1]), (my_dir[0], my_dir[1]), target)
-            vel_targ = Params.vel_const * math.sqrt(rad)
+            vel_targ = Hub.params.vel_const * math.sqrt(rad)
             r_a = self.calc_radial_thrust(pos, c, target, angle)
             #dist = linalg.norm(pos - target)
             print("vel={} vel_targ={} rad={}".format(vel, vel_targ, rad), file=sys.stderr)
@@ -400,13 +426,13 @@ class Opponent:
     def can_deliver_puch(self, other, target, angle):
         d_to_other = self.dist(other.pos[-1])
         print ("DISTANCE={}".format(d_to_other), file=sys.stderr)
-        if d_to_other > Params.side_puch_distance:
+        if d_to_other > Hub.params.side_puch_distance:
                 return False
         fc_dir = self.face_dir(angle, target)
         fdir = self.direction(other)
         rel_angle = math.fabs(fc_dir - fdir)
         print ("ABD ANGLE={} angle={} fc_dir={} fdir={}".format(rel_angle, angle, fc_dir, fdir), file=sys.stderr)
-        if rel_angle <= Params.side_punch_max_angle:
+        if rel_angle <= Hub.params.side_punch_max_angle:
             print ("MAY PUNCH", file=sys.stderr)
             return True
 
@@ -429,7 +455,7 @@ class Opponent:
         if len(self.pos) < 2 or len(other.pos) < 2:
             return False
 
-        if self.dist(other.pos[-1]) > Params.chase_max:
+        if self.dist(other.pos[-1]) > Hub.params.chase_max:
             return False
 
         if self.dist(target) < other.dist(target):
@@ -439,14 +465,15 @@ class Opponent:
         p2 = np.array(other.dir)
         angle = np.math.atan2(np.linalg.det([p1, p2]),np.dot(p1, p2))
         angle_deg = np.degrees(angle)
-        if math.fabs(angle_deg) > Params.chase_max_angle:
+        if math.fabs(angle_deg) > Hub.params.chase_max_angle:
             return False
         return True
 
 class Arena:
-    def __init__(self, name, stations):
+    def __init__(self, name, stations, params=None):
         self.name = name
         self.stations = stations
+        self.params = params
 
     def point_in_track(self, p):
         for ps in self.stations:
@@ -454,18 +481,22 @@ class Arena:
                 return True
         return False
 
+    def opt_params(self):
+        if self.params != None:
+            Hub.params = self.params
+
 class ArenaDetector:
     tracks = [Arena("hostile", [(13890, 1958), (8009, 3263), (2653, 7002), (10035, 5969)]),
               Arena("pyramid", [(7637, 5988), (3133, 7544), (9544, 4408), (14535, 7770), (6312, 4294), (7782, 851)]),
               Arena("triangle",[(6012, 5376), (11308, 2847), (7482, 6917)]),
               Arena("dalton", [(9589, 1395), (3618, 4434), (8011, 7920), (13272, 5530)]),
-              Arena("makbilit", [(12942, 7222), (5655, 2587), (4107, 7431), (13475, 2323)]),
+              Arena("makbilit", [(12942, 7222), (5655, 2587), (4107, 7431), (13475, 2323)], MacbilitParams()),
               Arena("arrow", [(10255, 4946), (6114, 2172), (3048, 5194), (6276, 7762), (14119, 7768), (13897, 1216)]),
-              Arena("Shosh",  [(9116, 1857), (5007, 5288), (11505, 6074)]),
+              Arena("Shosh",  [(9116, 1857), (5007, 5288), (11505, 6074)], ShoshParams()),
               Arena("Til",  [(10558, 5973), (3565, 5194), (13578, 7574), (12430, 1357)]),
               Arena("trapez",  [(11201, 5443), (7257, 6657), (5452, 2829), (10294, 3341)]),
               Arena("Mehumash", [(4049, 4630), (13054, 1928), (6582, 7823), (7494, 1330), (12701, 7080)]),
-              Arena("Trampoline",  [(3307, 7251), (14572, 7677), (10588, 5072), (13100, 2343), (4536, 2191), (7359, 4930)]),
+              Arena("Trampoline",  [(3307, 7251), (14572, 7677), (10588, 5072), (13100, 2343), (4536, 2191), (7359, 4930)], TrampolineParams()),
               Arena("Zigzag", [(10660, 2295), (8695, 7469), (7225, 2174), (3596, 5288), (13862, 5092)])
             ]
     def __init__(self):
@@ -520,7 +551,8 @@ class Collector:
                 print ("Arena detected: {}".format(arena.name), file=sys.stderr)
             else:
                 print("ARENA NOT DETECTED", file=sys.stderr)
-            self.algo = Planner()
+            arena.opt_params()
+            self.algo = Hub.params.r1planner
 
         if self.collecting and self.last_target != target:
             self.stations.append(target)
@@ -530,7 +562,7 @@ class Collector:
             self.lap +=  1
         if self.lap == 3 and (self.stat_in_lap % len(self.stations) == 0) and self.last_target != target:
             print ("PHOTOFINISH..........", file=sys.stderr)
-            self.algo = BlindPlanner()
+            self.algo = BlindPlanner(br=False)
 
         if self.last_target != target:
             self.algo.plan(pos, dist, angle, target, self.stations)
@@ -559,6 +591,9 @@ class Collector:
             if thr2 < thrust:
                 thr2 = thrust
         return new_target, thrust, boost
+
+class Hub:
+    params = Params()
 
 if __name__ == "__main__":
     calib = False
