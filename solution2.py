@@ -10,7 +10,7 @@ class Params:
         self.r1planner = Planner()
         self.r100 = 1800.
         self.thrust_rad_100 = 3300.
-        self.dist_break_distance = 0
+        self.dist_break_distance = 500
         self.minimal_straight_dist = 1000.
         self.break_dist = 0
         self.break_fac = 0.30
@@ -39,6 +39,33 @@ class MacbilitParams(Params):
     def __init__(self):
         Params.__init__(self)
         self.dist_break_distance = 0
+
+class MehumashParams(Params):
+    def __init__(self):
+        Params.__init__(self)
+        self.dist_break_distance = 2500
+
+class HostileParams(Params):
+    def __init__(self):
+        Params.__init__(self)
+        self.dist_break_distance = 2500
+
+class ArrowParams(Params):
+    def __init__(self):
+        Params.__init__(self)
+        self.dist_break_distance = 0
+        self.vel_const = 6.0
+
+class DaltonParams(Params):
+    def __init__(self):
+        Params.__init__(self)
+        self.r1planner = BlindPlanner()
+
+class TriangleParams(Params):
+    def __init__(self):
+        Params.__init__(self)
+        self.r1planner = BlindPlanner()
+        self.dist_break_distance = 300
 
 def to_array(p):
     return np.array((p[0], p[1]))
@@ -486,16 +513,17 @@ class Arena:
             Hub.params = self.params
 
 class ArenaDetector:
-    tracks = [Arena("hostile", [(13890, 1958), (8009, 3263), (2653, 7002), (10035, 5969)]),
+    tracks = [Arena("hostile", [(13890, 1958), (8009, 3263), (2653, 7002), (10035, 5969)], HostileParams()),
+              Arena("hostile2", [(9409, 7247), (5984, 4264), (14637, 1420), (3470, 7203)], HostileParams()),
               Arena("pyramid", [(7637, 5988), (3133, 7544), (9544, 4408), (14535, 7770), (6312, 4294), (7782, 851)]),
-              Arena("triangle",[(6012, 5376), (11308, 2847), (7482, 6917)]),
-              Arena("dalton", [(9589, 1395), (3618, 4434), (8011, 7920), (13272, 5530)]),
+              Arena("triangle",[(6012, 5376), (11308, 2847), (7482, 6917)], TriangleParams()),
+              Arena("dalton", [(9589, 1395), (3618, 4434), (8011, 7920), (13272, 5530)], DaltonParams()),
               Arena("makbilit", [(12942, 7222), (5655, 2587), (4107, 7431), (13475, 2323)], MacbilitParams()),
-              Arena("arrow", [(10255, 4946), (6114, 2172), (3048, 5194), (6276, 7762), (14119, 7768), (13897, 1216)]),
+              Arena("arrow", [(10255, 4946), (6114, 2172), (3048, 5194), (6276, 7762), (14119, 7768), (13897, 1216)], ArrowParams()),
               Arena("Shosh",  [(9116, 1857), (5007, 5288), (11505, 6074)], ShoshParams()),
               Arena("Til",  [(10558, 5973), (3565, 5194), (13578, 7574), (12430, 1357)]),
               Arena("trapez",  [(11201, 5443), (7257, 6657), (5452, 2829), (10294, 3341)]),
-              Arena("Mehumash", [(4049, 4630), (13054, 1928), (6582, 7823), (7494, 1330), (12701, 7080)]),
+              Arena("Mehumash", [(4049, 4630), (13054, 1928), (6582, 7823), (7494, 1330), (12701, 7080)], MehumashParams()),
               Arena("Trampoline",  [(3307, 7251), (14572, 7677), (10588, 5072), (13100, 2343), (4536, 2191), (7359, 4930)], TrampolineParams()),
               Arena("Zigzag", [(10660, 2295), (8695, 7469), (7225, 2174), (3596, 5288), (13862, 5092)])
             ]
@@ -513,15 +541,17 @@ class ArenaDetector:
                     detected = False
                     break
             if detected:
-                print ("Arena detected: {}".format(track.name), file=sys.stderr)
+                print ("Arena suspected: {}".format(track.name), file=sys.stderr)
                 num_tracks += 1
                 self.detected_track = track
         if num_tracks == 1:
+            print ("Single Arena detected: {}".format(self.detected_track.name), file=sys.stderr)
             return self.detected_track
 
 class Collector:
     def __init__(self):
         self.stations = []
+        self.arena = None
         self.collecting = True
         self.last_target = (-1, -1)
         self.last_pos = []
@@ -545,17 +575,21 @@ class Collector:
         if self.collecting and len(self.stations) and self.last_target != target and self.stations[0] == target:
             self.collecting = False
             self.lap = 1
-            print ("COLLECTED: {}".format(self.stations), file=sys.stderr)
-            arena = self.arena_detector.try_detect(self.stations)
-            if arena is not None:
-                print ("Arena detected: {}".format(arena.name), file=sys.stderr)
-            else:
-                print("ARENA NOT DETECTED", file=sys.stderr)
-            arena.opt_params()
             self.algo = Hub.params.r1planner
+            print ("COLLECTED: {} {}".format(self.stations, self.algo), file=sys.stderr)
 
         if self.collecting and self.last_target != target:
             self.stations.append(target)
+            if self.arena == None:
+                self.arena = self.arena_detector.try_detect(self.stations)
+                if self.arena is not None:
+                    print ("Arena detected: {}".format(self.arena.name), file=sys.stderr)
+                    self.arena.opt_params()
+                    #self.algo = Hub.params.r1planner
+                    #self.collecting = False
+                    #self.stations = self.arena.stations
+                else:
+                    print("ARENA NOT DETECTED", file=sys.stderr)
 
         if not self.collecting and self.last_target != target and ((self.stat_in_lap % len(self.stations)) == 1):
             print ("LAP: {}".format(self.lap), file=sys.stderr)
