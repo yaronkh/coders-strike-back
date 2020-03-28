@@ -23,8 +23,8 @@ class Params:
         self.Kp = 0.1
         self.Ki = 0
         self.Kd = 0
-        self.vel_const = 8.2
-        self.gtKp = 1
+        self.vel_const = 10
+        self.gtKp = 1.
         self.gtKi = 0
         self.gtKd = 0
 
@@ -32,12 +32,12 @@ class Params:
 class ShoshParams(Params):
     def __init__(self):
         Params.__init__(self)
-        self.dist_break_distance = 1000
+        self.dist_break_distance = 0
 
 class TrampolineParams(Params):
     def __init__(self):
         Params.__init__(self)
-        self.dist_break_distance = 2500
+        self.dist_break_distance = 0
 
 class MacbilitParams(Params):
     def __init__(self):
@@ -47,12 +47,12 @@ class MacbilitParams(Params):
 class MehumashParams(Params):
     def __init__(self):
         Params.__init__(self)
-        self.dist_break_distance = 2500
+        self.dist_break_distance = 0
 
 class HostileParams(Params):
     def __init__(self):
         Params.__init__(self)
-        self.dist_break_distance = 2500
+        self.dist_break_distance = 0
 
 class ArrowParams(Params):
     def __init__(self):
@@ -343,9 +343,11 @@ class BlindPlanner:
         self.regulator = PIDThrustRegulator()
         self.gt_regulator = GoToTargetRegulator()
         self.breaker = BreakBeforeTarget() if br else None
+        self.aim = True
         pass
 
     def plan(self, pos, dist, angle, target, stations):
+        self.aim = True
         self.regulator.reset()
         self.punch_mode = True
         self.gt_regulator.reset()
@@ -353,6 +355,10 @@ class BlindPlanner:
 
     def act(self, pos, dist, angle, target, last_pos, p_center, rad, opponent_pos):
         boost = False
+        if math.fabs(angle) >= 90 and self.aim:
+            return target, 0, False
+        else:
+            self.aim = False
         angle_ = math.fabs(angle)
         thrust = self.regulator.act(target, angle)
         tc = self.gt_regulator.act(target, pos)
@@ -381,7 +387,7 @@ class GoToTargetRegulator:
             return target
         pt = np.array(target) - np.array(pos)
         self.e = angle_between(pt, dir_)
-        if math.fabs(self.e) > 60:
+        if math.fabs(self.e) > 85:
             self.reset()
             return target
         self.ie += self.e
@@ -618,10 +624,10 @@ class Collector:
         self.arena_detector = ArenaDetector()
 
     def act(self, pos, dist, angle, target, opponent_pos):
-        #if self.clash and self.collecting:
-        #if dist > 7000 and self.clash and self.collecting:
-        #    self.clash = False
-        #    self.algo = BlindPlanner()
+        if self.clash and self.collecting:
+            #if dist > 7000 and self.clash and self.collecting:
+            self.clash = False
+            self.algo = BlindPlanner()
         if self.last_target != target:
             self.stat_in_lap += 1
             print ("STATION={}".format(self.stat_in_lap), file=sys.stderr)
@@ -714,5 +720,3 @@ if __name__ == "__main__":
             print(str(int(target[0])) + " " + str(int(target[1]))+ " BOOST")
         else:
             print(str(int(target[0])) + " " + str(int(target[1]))+ " " + str(thrust))
-
-
