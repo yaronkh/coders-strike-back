@@ -8,6 +8,7 @@ from scipy.special import comb
 class Params:
     def __init__(self):
         self.r1planner = Planner()
+        #self.r1planner = BlindPlanner()
         self.r100 = 1800.
         self.thrust_rad_100 = 3300.
         self.dist_break_distance = 500
@@ -23,6 +24,9 @@ class Params:
         self.Ki = 0
         self.Kd = 0
         self.vel_const = 8.2
+        self.gtKp = 1
+        self.gtKi = 0
+        self.gtKd = 0
 
 
 class ShoshParams(Params):
@@ -76,6 +80,33 @@ def direct(p1, p2):
 
 def rel_angle(p1, p2):
     return np.math.atan2(np.linalg.det([p1, p2]),np.dot(p1, p2))
+
+def point_to_line_dist(line, p):
+    (x1, y1), (x2, y2) = line
+    x0, y0 = p
+    d = -((y2 - y1)*x0 - (x2 - x1) *y0 +x2*y1 - y2*x1)/math.sqrt((y2 - y1)*(y2 - y1) + (x2 - x1)*(x2 - x1))
+    return d
+
+def unit_vector(vector):
+    """ Returns the unit vector of the vector.  """
+    return vector / np.linalg.norm(vector)
+
+def angle_between(v1, v2):
+    """ Returns the angle in radians between vectors 'v1' and 'v2'::
+
+            >>> angle_between((1, 0, 0), (0, 1, 0))
+            1.5707963267948966
+            >>> angle_between((1, 0, 0), (1, 0, 0))
+            0.0
+            >>> angle_between((1, 0, 0), (-1, 0, 0))
+            3.141592653589793
+    """
+    v1_u = unit_vector(v1)
+    v2_u = unit_vector(v2)
+    ret = np.degrees(np.arccos(np.clip(np.dot(v1_u, v2_u), -1.0, 1.0)))
+    cross = np.cross(v1_u, v2_u)
+    return ret if cross >= 0 else -ret
+
 
 def get_intersect(a1, a2, b1, b2):
     """
@@ -220,11 +251,15 @@ class Planner:
         self.rfacs = (0, 0)
         self.rad = 0
         self.regulator = PIDThrustRegulator()
+        self.gt_regulator = GoToTargetRegulator()
         self.punch_mode = False
         self.breaker = BreakBeforeTarget()
+        self.state = 0
 
 
     def plan(self, pos, dist, angle, target, stations):
+        self.state = 0
+        self.gt_regulator.reset()
         self.num_punch = Hub.params.num_punchs
         self.r100 = Hub.params.r100
         self.regulator.reset()
@@ -256,26 +291,30 @@ class Planner:
             self.num_punch -= 1
             if self.num_punch == 0:
                 self.punch_mode = True
+            self.gt_regulator.reset()
             npos, thrust, boost =  Opponent.other.next_pos(), 100, True
         if alpha < self.rfacs[0]:
+            if self.state != 0:
+                self.gt_regulator.reset()
+            self.stat = 0
             thrust = self.regulator.act(self.curve_st[0], angle)
             #return self.curve_st[0], self.thrust2, False
             npos, thrust, boost = self.curve_st[0], thrust, False
+            npos = self.gt_regulator.act(npos, pos)
         elif alpha < self.rfacs[1]:
+            if self.state != 1:
+                self.gt_regulator.reset()
+            self.state = 1
             thrust = self.regulator.act(self.curve_st[1], angle)
             npos, thrust, boost = self.curve_st[1], thrust, False
+            npos = self.gt_regulator.act(npos, pos)
         elif alpha <= self.max_alpha:
-            #angle = math.fabs(angle)
-            #thrust = 50 if angle > 45 else 100
-            #if dist < 4000:
-            #    thrust = 100 if angle < 2 else 65
-            #if angle > 90:
-            #    thrust = 20
-            #elif angle > 45:
-            #    thrust = 30
-
+            if self.state != 2:
+                self.gt_regulator.reset()
+            self.state = 2
             thrust = self.regulator.act(target, angle)
             npos, thrust, boost = target, thrust, False
+            npos = self.gt_regulator.act(npos, pos)
         else:
             #thrust = 30 if angle > 3 else 100
             thrust = self.regulator.act(target, angle)
@@ -302,45 +341,60 @@ class BlindPlanner:
         self.is_chasing = False
         self.punch_mode = True
         self.regulator = PIDThrustRegulator()
+        self.gt_regulator = GoToTargetRegulator()
         self.breaker = BreakBeforeTarget() if br else None
         pass
 
     def plan(self, pos, dist, angle, target, stations):
         self.regulator.reset()
         self.punch_mode = True
+        self.gt_regulator.reset()
         pass
 
     def act(self, pos, dist, angle, target, last_pos, p_center, rad, opponent_pos):
         boost = False
         angle_ = math.fabs(angle)
         thrust = self.regulator.act(target, angle)
-        #if dist > 7000 and angle_ < 5:
-        #    boost = True
-        #    thrust = 100
-        #elif dist < 2000:
-        #    thrust = 80 if angle_ < 10 else 50
-        #    if angle_ > 90:
-        #        thrust = 20
-        #    elif angle_ > 45:
-        #        thrust = 30
-        #else:
-        #    thrust = 100
-
+        tc = self.gt_regulator.act(target, pos)
         if not self.punch_mode and Opponent.me.can_deliver_puch(Opponent.other, target, angle):
             print ("PUNCH!!!!!!", file=sys.stderr)
             self.punch_mode = False
             return Opponent.other.next_pos(), 100, True
-        #if self.is_chasing and target != self.chasing_targ:
-        #     self.is_chasing = False
-        #if self.is_chasing or Opponent.me.is_chasing(Opponent.other, target):
-        #    print ("CHASING!!!!!!!!!!!!", file=sys.stderr)
-        #    self.is_chasing = True
-        #    self.chasing_targ = target
-        #    return opponent_pos, 100, True
         print ("NOT PUNCHING {}".format(self.punch_mode), file=sys.stderr)
         if self.breaker != None:
             thrust = self.breaker.get_thrust(thrust, dist, angle, target, rad)
-        return target, thrust, boost
+        return tc, thrust, boost
+
+class GoToTargetRegulator:
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.e = 0
+        self.ie = 0
+        self.last_e = 0
+        self.dedt = 0
+
+    def act(self, target, pos):
+        dir_ = Opponent.me.dir
+        if not Opponent.me.has_dir:
+            return target
+        pt = np.array(target) - np.array(pos)
+        self.e = angle_between(pt, dir_)
+        if math.fabs(self.e) > 60:
+            self.reset()
+            return target
+        self.ie += self.e
+        self.dedt = self.last_e - self.e
+        Kp = Hub.params.gtKp
+        Ki = Hub.params.gtKi
+        Kd = Hub.params.gtKd
+        c_angle = -(Kp*self.e + Ki*self.ie + Kd*self.dedt)
+        self.last_e = self.e
+        pt = rotate(pt, degrees=c_angle)
+        res = np.array(pos) + pt
+        return (res[0], res[1])
+
 
 class PIDThrustRegulator:
     def __init__(self):
