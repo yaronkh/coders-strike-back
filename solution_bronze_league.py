@@ -19,11 +19,11 @@ class Params:
         self.chase_max_angle = 5
         self.side_puch_distance = 1000
         self.side_punch_max_angle = 45
-        self.num_punchs = 0
+        self.num_punchs = 1
         self.Kp = 0.1
         self.Ki = 0
         self.Kd = 0
-        self.vel_const = 10
+        self.vel_const = 8.2
         self.gtKp = 1.
         self.gtKi = 0
         self.gtKd = 0
@@ -42,16 +42,38 @@ class TrampolineParams(Params):
 class MacbilitParams(Params):
     def __init__(self):
         Params.__init__(self)
+        self.r100 = 1800.
         self.dist_break_distance = 0
 
 class MehumashParams(Params):
     def __init__(self):
         Params.__init__(self)
+        #self.vel_const = 2.
+        self.r100 = 3000.
+        #self.break_fac = 0.0
+        self.break_fac = 0.14
+        self.vel_const = 18
+        #self.r100 = 6000
         self.dist_break_distance = 0
 
 class HostileParams(Params):
     def __init__(self):
         Params.__init__(self)
+        self.break_fac = 0.3
+        self.r100 = 2200.
+        self.vel_const = 8.2
+        self.dist_break_distance = 0
+
+
+class ZigzagParams(Params):
+    def __init__(self):
+        Params.__init__(self)
+        #self.vel_const = 2.
+        self.r100 = 2000.
+        #self.break_fac = 0.0
+        self.break_fac = 0.2
+        self.vel_const = 8.2
+        #self.r100 = 6000
         self.dist_break_distance = 0
 
 class ArrowParams(Params):
@@ -199,8 +221,8 @@ def calc_node_approach(p1, p2, p3, rad):
         break_vec = p21 * Hub.params.break_dist
         target = t_pivot + direct + break_vec
         target0 = target + p21 * Hub.params.minimal_straight_dist
-    if math.fabs(angle_deg) < 51:
-        extra_fac = 0.3
+    #if math.fabs(angle_deg) < 51:
+    #    extra_fac = 0.3
     fac1 = closest_point_to_segment(p1, p2, target) - (Hub.params.break_fac + extra_fac)
     fac0 = closest_point_to_segment(p1, p2, target0) - (Hub.params.break_fac + extra_fac)
 
@@ -272,8 +294,10 @@ class Planner:
         d = math.sqrt((x2 - x1)*(x2 - x1) + (y2 - y1)*(y2 - y1))
         if d > (2 * self.r100 + Hub.params.minimal_straight_dist):
             rad = self.r100
+            print ("regular: dist={},rad={}".format(d, rad), file=sys.stderr)
         else:
             rad = (d - 600) / 2.0
+            print ("special: dist={},rad={}".format(d, rad), file=sys.stderr)
         self.rad = rad
         print ("PLAN: {},{},{}".format(stations[-1], stations[0], stations[1]), file=sys.stderr)
         self.pivot, self.curve_st, self.rfacs, self.angle = calc_node_approach(stations[-1], stations[0], stations[1], rad)
@@ -286,6 +310,7 @@ class Planner:
 
     def act(self, pos, dist, angle, target, last_pos, p_center, rad, opponent_pos):
         alpha = closest_point_to_segment(self.stations[-1], self.stations[0], pos)
+        print ("alpha={}".format(alpha), file=sys.stderr)
         if dist > 1200 and self.num_punch > 0 and not self.punch_mode and Opponent.me.can_deliver_puch(Opponent.other, target, angle):
             print ("PUNCH!!!!!!", file=sys.stderr)
             self.num_punch -= 1
@@ -293,32 +318,39 @@ class Planner:
                 self.punch_mode = True
             self.gt_regulator.reset()
             npos, thrust, boost =  Opponent.other.next_pos(), 100, True
-        if alpha < self.rfacs[0]:
-            if self.state != 0:
-                self.gt_regulator.reset()
-            self.stat = 0
-            thrust = self.regulator.act(self.curve_st[0], angle)
-            #return self.curve_st[0], self.thrust2, False
-            npos, thrust, boost = self.curve_st[0], thrust, False
-            npos = self.gt_regulator.act(npos, pos)
-        elif alpha < self.rfacs[1]:
-            if self.state != 1:
-                self.gt_regulator.reset()
-            self.state = 1
-            thrust = self.regulator.act(self.curve_st[1], angle)
-            npos, thrust, boost = self.curve_st[1], thrust, False
-            npos = self.gt_regulator.act(npos, pos)
-        elif alpha <= self.max_alpha:
-            if self.state != 2:
-                self.gt_regulator.reset()
-            self.state = 2
-            thrust = self.regulator.act(target, angle)
-            npos, thrust, boost = target, thrust, False
-            npos = self.gt_regulator.act(npos, pos)
         else:
-            #thrust = 30 if angle > 3 else 100
-            thrust = self.regulator.act(target, angle)
-            npos, thrust, boost = target, thrust, False
+            if alpha < self.rfacs[0]:
+                if self.state != 0:
+                    self.gt_regulator.reset()
+                self.stat = 0
+                thrust = self.regulator.act(self.curve_st[0], angle)
+                #return self.curve_st[0], self.thrust2, False
+                print ("state0: moving to {}".format(self.curve_st[0]), file=sys.stderr)
+                npos, thrust, boost = self.curve_st[0], thrust, False
+                npos = self.gt_regulator.act(npos, pos)
+            elif alpha < self.rfacs[1]:
+                if self.state != 1:
+                    self.gt_regulator.reset()
+                self.state = 1
+                thrust = self.regulator.act(self.curve_st[1], angle)
+                print ("state1: moving to {}".format(self.curve_st[1]), file=sys.stderr)
+                npos, thrust, boost = self.curve_st[1], thrust, False
+                npos = self.gt_regulator.act(npos, pos)
+            elif alpha <= self.max_alpha:
+                if self.state != 2:
+                    self.gt_regulator.reset()
+                self.state = 2
+                thrust = self.regulator.act(target, angle)
+                print ("state2: moving to {}".format(target), file=sys.stderr)
+                npos, thrust, boost = target, thrust, False
+                npos = self.gt_regulator.act(npos, pos)
+            else:
+                #thrust = 30 if angle > 3 else 100
+                thrust = self.regulator.act(target, angle)
+                print ("over: moving to {}".format(target), file=sys.stderr)
+
+                npos, thrust, boost = target, thrust, False
+                npos = self.gt_regulator.act(npos, pos)
         thrust = self.breaker.get_thrust(thrust, dist, angle, target, rad)
         return npos, thrust, boost
 
@@ -585,7 +617,7 @@ class ArenaDetector:
               Arena("trapez",  [(11201, 5443), (7257, 6657), (5452, 2829), (10294, 3341)]),
               Arena("Mehumash", [(4049, 4630), (13054, 1928), (6582, 7823), (7494, 1330), (12701, 7080)], MehumashParams()),
               Arena("Trampoline",  [(3307, 7251), (14572, 7677), (10588, 5072), (13100, 2343), (4536, 2191), (7359, 4930)], TrampolineParams()),
-              Arena("Zigzag", [(10660, 2295), (8695, 7469), (7225, 2174), (3596, 5288), (13862, 5092)])
+              Arena("Zigzag", [(10660, 2295), (8695, 7469), (7225, 2174), (3596, 5288), (13862, 5092)],ZigzagParams())
             ]
     def __init__(self):
         self.detected_track = None
@@ -720,3 +752,5 @@ if __name__ == "__main__":
             print(str(int(target[0])) + " " + str(int(target[1]))+ " BOOST")
         else:
             print(str(int(target[0])) + " " + str(int(target[1]))+ " " + str(thrust))
+
+
