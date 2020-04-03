@@ -9,7 +9,7 @@ import copy
 
 class Params:
     def __init__(self):
-        self.planner = BlindPlanner()
+        self.planner = Planner()
         self.r100 = 1800.
         self.thrust_rad_100 = 3300.
         self.minimal_straight_dist = 1000.
@@ -104,6 +104,17 @@ def point_to_line_dist(line, p):
 def unit_vector(vector):
     """ Returns the unit vector of the vector.  """
     return vector / np.linalg.norm(vector)
+
+def angleabs2angle(angle_abs, target, pos):
+    """
+    convert absolute heading angle to angle relative to target
+    """
+    angle_abs_rad = np.radians(angle_abs)
+    angle_uv = (math.cos(angle_abs_rad), math.sin(angle_abs_rad))
+    t = np.array(target) - np.array(pos)
+    angle = angle_between(angle_uv, t)
+    return np.degrees(angle)
+
 
 def angle_between(v1, v2):
     """ Returns the angle in radians between vectors 'v1' and 'v2'::
@@ -248,7 +259,7 @@ class Planner:
         self.tracker = None
 
 
-    def plan(self, pos, angle, target, stations, tracker, params):
+    def plan(self, pos, angle_abs, target, stations, tracker, params):
         self.state = 0
         self.params = params
         self.tracker = tracker
@@ -259,6 +270,7 @@ class Planner:
         y1 = stations[-1][1]
         x2 = stations[0][0]
         y2 = stations[0][1]
+        angle = angleabs2angle(angle_abs, target, pos)
         d = math.sqrt((x2 - x1)*(x2 - x1) + (y2 - y1)*(y2 - y1))
         if d > (2 * self.r100 + params.minimal_straight_dist):
             rad = self.r100
@@ -276,7 +288,8 @@ class Planner:
         #self.thrust = 100
         self.max_alpha = 1.0 + 300.0 / d
 
-    def act(self, pos,  angle, target):
+    def act(self, pos,  angle_abs, target):
+        angle = angleabs2angle(angle_abs, target, pos)
         alpha = closest_point_to_segment(self.stations[-1], self.stations[0], pos)
         print ("alpha={}".format(alpha), file=sys.stderr)
         if alpha < self.rfacs[0]:
@@ -313,6 +326,7 @@ class Planner:
             npos = self.gt_regulator.act(npos, pos)
         return npos, thrust, boost
 
+
 class BlindPlanner:
     def __init__(self, br=True):
         self.is_chasing = False
@@ -327,7 +341,8 @@ class BlindPlanner:
         self.gt_regulator.reset(tracker, params)
         pass
 
-    def act(self, pos, angle, target):
+    def act(self, pos, angle_abs, target):
+        angle = angleabs2angle(angle_abs, target, pos)
         boost = False
         if math.fabs(angle) >= 90 and self.aim:
             return target, 0, False
@@ -549,7 +564,7 @@ class Tracker:
         if len(self.pos) < 2:
             return None
         dir_ = unit_vector(np.array(self.vel))
-        rel = np.array(self.pos[-1]) - np.array(self.pos[2])
+        rel = np.array(self.pos[-1]) - np.array(self.pos[-2])
         dir_ *= linalg.norm(rel)
         ret = np.array(self.pos[-1]) + dir_
         return ret[0], ret[1]
