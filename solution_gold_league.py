@@ -19,9 +19,9 @@ class OpponentPodParams(PodParams):
     def __init__(self):
         self.planner = Planner()
         self.side_puch_distance = 1800
-        self.side_punch_max_angle = 10
-        self.collision_min_vel = 550
-        self.num_punchs = 5
+        self.side_punch_max_angle = 30
+        self.collision_min_vel = 100
+        self.num_punchs = 0
 
 class OffencePodParams(PodParams):
     def __init__(self):
@@ -30,9 +30,9 @@ class OffencePodParams(PodParams):
 class DefencePodParams(PodParams):
     def __init__(self):
         PodParams.__init__(self)
-        self.side_puch_distance = 3500
-        self.side_punch_max_angle = 45
-        self.shell_punch_dist = 900
+        self.side_puch_distance = 2000
+        self.side_punch_max_angle = 60
+        self.shell_punch_dist = 0
         self.num_punchs = 0
 
 class ArenaParams:
@@ -383,18 +383,19 @@ class GuardPostStrategy:
         self.stations = stations[:]
         self.tracker = tracker
         self.thrust = 100
+        self.target = target
         self.algo.plan(pos, angle, target, stations, tracker, params)
 
     def act(self, pos, angle_abs, target):
-        rel = np.array(target) - np.array(pos)
+        rel = np.array(self.target) - np.array(pos)
         dist = linalg.norm(rel)
         targ_dir = rel / dist
         vel_targ = np.dot(self.tracker.vel, targ_dir)
         brake_dist = PodKinematics.braking_dist(vel_targ)
         if dist < ArenaParams.station_rad + 500 or brake_dist >= dist:
-            return self.stations[-1], 0, False
+            return opponent_leader.pos[-1], 0, False
         else:
-            return self.algo.act(pos, angle_abs, target)
+            return self.algo.act(pos, angle_abs, self.target)
 
 class BlindPlanner:
     def __init__(self, br=True):
@@ -551,7 +552,7 @@ class Tracker:
             self.time_left_to_punch -= 1
         elif self.attempt_punch():
             return
-        shield = self.need_protection()
+        shield = False #self.need_protection()
         tc, thrust, boost = self.pod_params.planner.act(self.pos[-1], self.angle, self.stations[0])
         self.write(tc, thrust, boost, shield)
 
@@ -626,7 +627,7 @@ class Tracker:
             if self.can_deliver_puch(other):
                 d = self.dist(other.pos[-1])
                 print ("PUNCH {}!!!!!!".format(d), file=sys.stderr)
-                shell = True if d < self.pod_params.shell_punch_dist else False
+                shell = False
                 self.write(other.next_pos(), 100, True, shell)
                 self.time_left_to_punch = self.pod_params.num_punchs
                 return True
@@ -678,18 +679,34 @@ class Defender(Tracker):
         self.algo = GuardPostStrategy(num_laps)
         self.stations = []
         self.station_id = -1
+        self.leader_origin = (0, 0)
 
     def act(self):
         leader = opponent_leader
         print ("leader stations={} my_stat={}".format(leader.passed_stations, self.station_id), file=sys.stderr)
         if leader.passed_stations >= self.station_id:
+            self.leader_origin = leader.stations[0]
+            p23 = np.array(self.leader_origin) - np.array(leader.stations[1])
+            p23 = p23 * 0.2
+            target = leader.stations[1] + p23
             self.station_id = leader.passed_stations + 2
             self.stations = leader.stations[1:] +[leader.stations[0]]
-            self.algo.plan(self.pos[-1], self.angle, leader.stations[1], self.stations, self, self.arena_params)
+            self.algo.plan(self.pos[-1], self.angle, target, self.stations, self, self.arena_params)
+
+        p23 = np.array(self.leader_origin) - np.array(leader.stations[1])
+        p23 = p23 * 0.2
+        target = leader.stations[1] + p23
 
         shield = self.need_protection()
-        tc, thrust, boost = self.algo.act(self.pos[-1], self.angle, self.stations[0])
-        self.write(tc, thrust, boost, False)
+        print ("defender shield={}".format(shield), file=sys.stderr)
+
+        if self.time_left_to_punch > 0:
+            self.time_left_to_punch -= 1
+        elif not shield and self.attempt_punch():
+            return
+
+        tc, thrust, boost = self.algo.act(self.pos[-1], self.angle, target)
+        self.write(tc, thrust, boost, shield)
 
     def report_pos(self, pos, vel, angle, next_cp):
         self.pos.append(pos)
