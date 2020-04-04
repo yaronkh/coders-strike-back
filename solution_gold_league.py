@@ -36,6 +36,7 @@ class DefencePodParams(PodParams):
         self.num_punchs = 0
 
 class ArenaParams:
+    friction_fac = 0.85 # the current speed vector of each pod is multiplied by that factor
     def __init__(self):
         self.r100 = 1800.
         self.thrust_rad_100 = 3300.
@@ -49,7 +50,6 @@ class ArenaParams:
         self.gtKp = 0.8
         self.gtKi = 0
         self.gtKd = 0
-
 
 class ShoshParams(ArenaParams):
     def __init__(self):
@@ -265,6 +265,19 @@ def closest_point_to_segment(p, q, x):
     alpha = np.dot(s, v)/np.dot(v, v)
     return alpha
 
+class PodKinematics:
+    series_converge_fac = 1.0 / (1.0 - ArenaParams.friction_fac)
+
+    @staticmethod
+    def braking_dist(tangent_vel):
+        return tangent_vel * PodKinematics.series_converge_fac
+
+    @staticmethod
+    def max_vel(thrust):
+        return thrust * PodKinematics.series_converge_fac
+
+    braking_dist_t100 = PodKinematics.braking_dist(PodKinematics.max_vel(100))
+
 class Planner:
     def __init__(self):
         self.pivot = (0, 0)
@@ -348,6 +361,43 @@ class Planner:
             npos = self.gt_regulator.act(npos, pos)
         return npos, thrust, boost
 
+class GuardPostStrategy:
+    """
+    A strategy where the pod rush to a given position
+    and does not let the opponent leader to reach it.
+    The strategy ends when the opponent reach that target
+    """
+    def __init__(self, traker):
+        self.tracker = traker
+        self.target = (0, 0)
+        self.gt_regulator = GoToTargetRegulator()
+        self.station = []
+
+    def plan(self, pos, angle, target, stations, tracker, params
+            ):
+        """
+        stations - the list of stations, the post to defend is the first station
+        """
+        self.stations = stations[:]
+        self.tracker = tracker
+        self.thrust = 100
+        self.gt_regulator.plan(pos, angle, target, stations, tracker, params)
+        rel = np.array(target) - np.array(pos)
+        self.dist = linalg.norm(rel)
+        max_braking_dist = PodKinematics.braking_dist_t100
+        if dist >= max_braking_dist:
+        speed_limit = tracker.pod_params.speed_limit
+
+    def act(self, pos, angle_abs, target):
+        rel = np.array(target) - np.array(pos)
+        dist = linalg.norm(rel)
+        targ_dir = rel / dist
+        vel_targ = np.dot(self.tracker.vel, targ_dir)
+        brake_dist = PodKinematics.braking_dist_t100(vel_targ)
+        if brake_dist >= dist:
+            return self.stations[-1], 0, False
+        else:
+            return self.gt_regulator.act(pos, angle_abs, target)
 
 class BlindPlanner:
     def __init__(self, br=True):
