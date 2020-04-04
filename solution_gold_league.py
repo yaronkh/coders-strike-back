@@ -36,6 +36,7 @@ class DefencePodParams(PodParams):
         self.num_punchs = 0
 
 class ArenaParams:
+    station_rad = 300
     friction_fac = 0.85 # the current speed vector of each pod is multiplied by that factor
     def __init__(self):
         self.r100 = 1800.
@@ -266,6 +267,7 @@ def closest_point_to_segment(p, q, x):
     return alpha
 
 class PodKinematics:
+    braking_dist_t100 = 0
     series_converge_fac = 1.0 / (1.0 - ArenaParams.friction_fac)
 
     @staticmethod
@@ -276,7 +278,7 @@ class PodKinematics:
     def max_vel(thrust):
         return thrust * PodKinematics.series_converge_fac
 
-    braking_dist_t100 = PodKinematics.braking_dist(PodKinematics.max_vel(100))
+PodKinematics.braking_dist_t100 = PodKinematics.braking_dist(PodKinematics.max_vel(100))
 
 class Planner:
     def __init__(self):
@@ -370,7 +372,7 @@ class GuardPostStrategy:
     def __init__(self, traker):
         self.tracker = traker
         self.target = (0, 0)
-        self.gt_regulator = GoToTargetRegulator()
+        self.algo = BlindPlanner()
         self.station = []
 
     def plan(self, pos, angle, target, stations, tracker, params
@@ -381,23 +383,18 @@ class GuardPostStrategy:
         self.stations = stations[:]
         self.tracker = tracker
         self.thrust = 100
-        self.gt_regulator.plan(pos, angle, target, stations, tracker, params)
-        rel = np.array(target) - np.array(pos)
-        self.dist = linalg.norm(rel)
-        max_braking_dist = PodKinematics.braking_dist_t100
-        if dist >= max_braking_dist:
-        speed_limit = tracker.pod_params.speed_limit
+        self.algo.plan(pos, angle, target, stations, tracker, params)
 
     def act(self, pos, angle_abs, target):
         rel = np.array(target) - np.array(pos)
         dist = linalg.norm(rel)
         targ_dir = rel / dist
         vel_targ = np.dot(self.tracker.vel, targ_dir)
-        brake_dist = PodKinematics.braking_dist_t100(vel_targ)
-        if brake_dist >= dist:
+        brake_dist = PodKinematics.braking_dist(vel_targ)
+        if dist < ArenaParams.station_rad + 500 or brake_dist >= dist:
             return self.stations[-1], 0, False
         else:
-            return self.gt_regulator.act(pos, angle_abs, target)
+            return self.algo.act(pos, angle_abs, target)
 
 class BlindPlanner:
     def __init__(self, br=True):
@@ -548,7 +545,7 @@ class Tracker:
         print ("VEL {}".format(linalg.norm(self.vel)), file=sys.stderr)
         if self.prev_cp != self.next_cp:
             print ("TRACHER:ACT now planning", file=sys.stderr)
-            self.pod_params.planner.plan(self.pos[-1], angle, self.stations[0], self.stations, self, self.arena_params)
+            self.pod_params.planner.plan(self.pos[-1], self.angle, self.stations[0], self.stations, self, self.arena_params)
 
         if self.time_left_to_punch > 0:
             self.time_left_to_punch -= 1
@@ -578,11 +575,26 @@ class Tracker:
             self.pos = self.pos[1:]
         self.angle = angle
         self.vel = vel
-        if next_cp != self.prev_cp:
+        if next_cp != self.next_cp:
+            print ("next_cp={}".format(next_cp), file=sys.stderr)
             self.passed_stations += 1
             self.stations = arena_detector.stations[next_cp:] + arena_detector.stations[:next_cp]
         self.prev_cp = self.next_cp
         self.next_cp = next_cp
+
+    @staticmethod
+    def leader(p1, p2):
+        if p1.passed_stations < p2.passed_stations:
+            return p2, p1
+        elif p1.passed_stations > p2.passed_stations:
+            return p1, p2
+        else:
+            fac_p1 = math.fabs(1.0 - closest_point_to_segment(p1.stations[-1], p1.stations[0], p1.pos[-1]))
+            fac_p2 = math.fabs(1.0 - closest_point_to_segment(p2.stations[-1], p2.stations[0], p2.pos[-1]))
+            if fac_p1 < fac_p2:
+                return p1, p2
+            else:
+                return p2, p1
 
     def configure(self, arena_detector, num_laps):
         self.num_laps  = num_laps
@@ -611,7 +623,7 @@ class Tracker:
         if len(self.pos) < 2:
             return False
         for other in Tracker.other:
-            if other.leader and self.can_deliver_puch(other):
+            if self.can_deliver_puch(other):
                 d = self.dist(other.pos[-1])
                 print ("PUNCH {}!!!!!!".format(d), file=sys.stderr)
                 shell = True if d < self.pod_params.shell_punch_dist else False
@@ -659,6 +671,32 @@ class Tracker:
         dir_ *= linalg.norm(rel)
         ret = np.array(self.pos[-1]) + dir_
         return ret[0], ret[1]
+
+class Defender(Tracker):
+    def __init__(self, num_laps):
+        Tracker.__init__(self, num_laps)
+        self.algo = GuardPostStrategy(num_laps)
+        self.stations = []
+        self.station_id = -1
+
+    def act(self):
+        leader = opponent_leader
+        print ("leader stations={} my_stat={}".format(leader.passed_stations, self.station_id), file=sys.stderr)
+        if leader.passed_stations >= self.station_id:
+            self.station_id = leader.passed_stations + 2
+            self.stations = leader.stations[1:] +[leader.stations[0]]
+            self.algo.plan(self.pos[-1], self.angle, leader.stations[1], self.stations, self, self.arena_params)
+
+        shield = self.need_protection()
+        tc, thrust, boost = self.algo.act(self.pos[-1], self.angle, self.stations[0])
+        self.write(tc, thrust, boost, False)
+
+    def report_pos(self, pos, vel, angle, next_cp):
+        self.pos.append(pos)
+        if len(self.pos) > 10:
+            self.pos = self.pos[1:]
+        self.angle = angle
+        self.vel = vel
 
 class Arena:
     def __init__(self, name, stations, params=None):
@@ -714,16 +752,17 @@ arena_detector = ArenaDetector()
 defence_params = DefencePodParams()
 offence_params = OffencePodParams()
 
+opponent_leader = None
+opponent_follower = None
+
 if __name__ == "__main__":
     num_laps = int(input())
-    Tracker.me = Tracker(num_laps), Tracker(num_laps)
+    Tracker.me = Tracker(num_laps), Defender(num_laps)
     Tracker.other = Tracker(num_laps), Tracker(num_laps)
     Tracker.me[0].pod_params = offence_params
     Tracker.me[1].pod_params = defence_params
     Tracker.other[0].pod_params = OpponentPodParams()
     Tracker.other[1].pod_params = OpponentPodParams()
-    Tracker.other[0].leader = True
-    Tracker.other[1].leader = False
 
     check_point_count = int(input())
     stations = []
@@ -749,19 +788,7 @@ if __name__ == "__main__":
             x, y, vx, vy, angle, next_cp = [int(i) for i in input().split()]
             tracker.report_pos((x, y), (vx, vy), angle, next_cp)
 
-        if Tracker.me[0].passed_stations < Tracker.me[1].passed_stations:
-            Tracker.me[0].pod_params = defence_params
-            Tracker.me[1].pod_params = offence_params
-        else:
-            Tracker.me[0].pod_params = offence_params
-            Tracker.me[1].pod_params = defence_params
-
-        if Tracker.other[0].passed_stations < Tracker.other[1].passed_stations:
-            Tracker.other[1].leader = True
-            Tracker.other[0].leader = False
-        else:
-            Tracker.other[0].leader = True
-            Tracker.other[1].leader = False
+        opponent_leader, opponent_follower = Tracker.leader(Tracker.other[0], Tracker.other[1])
 
         Tracker.me[0].act()
         Tracker.me[1].act()
