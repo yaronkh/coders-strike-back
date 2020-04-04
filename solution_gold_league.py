@@ -7,44 +7,66 @@ from scipy.special import comb
 import copy
 
 
-class Params:
+class PodParams:
     def __init__(self):
         self.planner = Planner()
+        self.side_puch_distance = 1000
+        self.side_punch_max_angle = 30
+        self.shell_punch_dist = 0
+        self.num_punchs = 5
+
+class OpponentPodParams(PodParams):
+    def __init__(self):
+        self.planner = Planner()
+        self.side_puch_distance = 1800
+        self.side_punch_max_angle = 10
+        self.collision_min_vel = 550
+        self.num_punchs = 5
+
+class OffencePodParams(PodParams):
+    def __init__(self):
+        PodParams.__init__(self)
+
+class DefencePodParams(PodParams):
+    def __init__(self):
+        PodParams.__init__(self)
+        self.side_puch_distance = 3500
+        self.side_punch_max_angle = 45
+        self.shell_punch_dist = 900
+        self.num_punchs = 0
+
+class ArenaParams:
+    def __init__(self):
         self.r100 = 1800.
         self.thrust_rad_100 = 3300.
         self.minimal_straight_dist = 1000.
         self.break_dist = 0
         self.break_fac = 0.30
-        self.chase_max = 2000
-        self.chase_max_angle = 5
-        self.side_puch_distance = 1000
-        self.side_punch_max_angle = 45
-        self.num_punchs = 10
         self.Kp = 0.1
         self.Ki = 0
         self.Kd = 0
         self.vel_const = 8.2
-        self.gtKp = 1.
+        self.gtKp = 0.8
         self.gtKi = 0
         self.gtKd = 0
 
 
-class ShoshParams(Params):
+class ShoshParams(ArenaParams):
     def __init__(self):
-        Params.__init__(self)
+        ArenaParams.__init__(self)
 
-class TrampolineParams(Params):
+class TrampolineParams(ArenaParams):
     def __init__(self):
-        Params.__init__(self)
+        ArenaParams.__init__(self)
 
-class MacbilitParams(Params):
+class MacbilitParams(ArenaParams):
     def __init__(self):
-        Params.__init__(self)
+        ArenaParams.__init__(self)
         self.r100 = 1800.
 
-class MehumashParams(Params):
+class MehumashParams(ArenaParams):
     def __init__(self):
-        Params.__init__(self)
+        ArenaParams.__init__(self)
         #self.vel_const = 2.
         self.r100 = 3000.
         #self.break_fac = 0.0
@@ -52,17 +74,17 @@ class MehumashParams(Params):
         self.vel_const = 18
         #self.r100 = 6000
 
-class HostileParams(Params):
+class HostileParams(ArenaParams):
     def __init__(self):
-        Params.__init__(self)
+        ArenaParams.__init__(self)
         self.break_fac = 0.3
         self.r100 = 2200.
         self.vel_const = 8.2
 
 
-class ZigzagParams(Params):
+class ZigzagParams(ArenaParams):
     def __init__(self):
-        Params.__init__(self)
+        ArenaParams.__init__(self)
         #self.vel_const = 2.
         self.r100 = 2000.
         #self.break_fac = 0.0
@@ -70,19 +92,19 @@ class ZigzagParams(Params):
         self.vel_const = 8.2
         #self.r100 = 6000
 
-class ArrowParams(Params):
+class ArrowParams(ArenaParams):
     def __init__(self):
-        Params.__init__(self)
+        ArenaParams.__init__(self)
         self.vel_const = 6.0
 
-class DaltonParams(Params):
+class DaltonParams(ArenaParams):
     def __init__(self):
-        Params.__init__(self)
+        ArenaParams.__init__(self)
         self.r1planner = BlindPlanner()
 
-class TriangleParams(Params):
+class TriangleParams(ArenaParams):
     def __init__(self):
-        Params.__init__(self)
+        ArenaParams.__init__(self)
         self.r1planner = BlindPlanner()
 
 def to_array(p):
@@ -458,9 +480,10 @@ class Tracker:
     me = None
     other = None
 
-    def __init__(self):
+    def __init__(self, num_laps):
         self.num_laps = 0
-        self.params = None
+        self.arena_params = None
+        self.pod_params = None
         self.pos = []
         self.vel = None
         self.angle = 0
@@ -468,23 +491,27 @@ class Tracker:
         self.prev_cp = 0
         self.stations = []
         self.time_left_to_punch = 0
+        self.num_laps = num_laps
+        self.passed_stations = 0
 
     def act(self):
-        print ("TRACHER:ACT {} {}".format(self.prev_cp, self.next_cp), file=sys.stderr)
+        print ("VEL {}".format(linalg.norm(self.vel)), file=sys.stderr)
         if self.prev_cp != self.next_cp:
             print ("TRACHER:ACT now planning", file=sys.stderr)
-            self.params.planner.plan(self.pos[-1], angle, self.stations[0], self.stations, self, self.params)
+            self.pod_params.planner.plan(self.pos[-1], angle, self.stations[0], self.stations, self, self.arena_params)
 
         if self.time_left_to_punch > 0:
             self.time_left_to_punch -= 1
         elif self.attempt_punch():
             return
+        shield = self.need_protection()
+        tc, thrust, boost = self.pod_params.planner.act(self.pos[-1], self.angle, self.stations[0])
+        self.write(tc, thrust, boost, shield)
 
-        tc, thrust, boost = self.params.planner.act(self.pos[-1], self.angle, self.stations[0])
-        self.write(tc, thrust, boost)
-
-    def write(self, tc, thrust, boost):
-        if boost:
+    def write(self, tc, thrust, boost, shield):
+        if shield:
+            print(str(int(tc[0])) + " " + str(int(tc[1]))+ " SHIELD")
+        elif boost:
             print(str(int(tc[0])) + " " + str(int(tc[1]))+ " BOOST")
         else:
             print(str(int(tc[0])) + " " + str(int(tc[1]))+ " " + str(thrust))
@@ -496,21 +523,21 @@ class Tracker:
         return self.vel[0] / vel_abs, self.vel[1] / vel_abs
 
     def report_pos(self, pos, vel, angle, next_cp):
-        print ("next_pos={}".format(next_cp), file=sys.stderr)
         self.pos.append(pos)
         if len(self.pos) > 10:
             self.pos = self.pos[1:]
         self.angle = angle
         self.vel = vel
         if next_cp != self.prev_cp:
+            self.passed_stations += 1
             self.stations = arena_detector.stations[next_cp:] + arena_detector.stations[:next_cp]
         self.prev_cp = self.next_cp
         self.next_cp = next_cp
 
     def configure(self, arena_detector, num_laps):
         self.num_laps  = num_laps
-        self.params = copy.deepcopy(arena_detector.detected_track.params) if arena_detector.detected_track != None  and arena_detector.detected_track.params != None else Params()
-        print ("PARAMS={}".format(self.params), file=sys.stderr)
+        self.arena_params = copy.deepcopy(arena_detector.detected_track.params) if arena_detector.detected_track != None  and arena_detector.detected_track.params != None else ArenaParams()
+        print ("ARENA PARAMS={}".format(self.arena_params), file=sys.stderr)
         self.stations = arena_detector.stations[:]
 
     def dist(self, target):
@@ -534,24 +561,36 @@ class Tracker:
         if len(self.pos) < 2:
             return False
         for other in Tracker.other:
-            if self.can_deliver_puch(other, self.stations[0], self.angle):
-                print ("PUNCH!!!!!!", file=sys.stderr)
-                self.write(other.next_pos(), 100, True)
-                self.time_left_to_punch = self.params.num_punchs
+            if other.leader and self.can_deliver_puch(other):
+                d = self.dist(other.pos[-1])
+                print ("PUNCH {}!!!!!!".format(d), file=sys.stderr)
+                shell = True if d < self.pod_params.shell_punch_dist else False
+                self.write(other.next_pos(), 100, True, shell)
+                self.time_left_to_punch = self.pod_params.num_punchs
+                return True
+        return False
+
+    def need_protection(self):
+        for other in Tracker.other:
+            if len(other.pos) < 2:
+                continue
+            if linalg.norm(other.vel) < other.pod_params.collision_min_vel:
+                continue
+            if other.can_deliver_puch(self):
                 return True
         return False
 
 
-    def can_deliver_puch(self, other, target, angle):
+    def can_deliver_puch(self, other):
         d_to_other = self.dist(other.pos[-1])
         print ("DISTANCE={}".format(d_to_other), file=sys.stderr)
-        if d_to_other > self.params.side_puch_distance:
+        if d_to_other > self.pod_params.side_puch_distance:
                 return False
         fc_dir = np.degrees(math.atan2(self.vel[1], self.vel[0]))
         fdir = self.direction_rel_to(other)
         rel_angle = math.fabs(fc_dir - fdir)
         print ("ABD ANGLE={} angle={} fc_dir={} fdir={}".format(rel_angle, angle, fc_dir, fdir), file=sys.stderr)
-        if rel_angle <= self.params.side_punch_max_angle:
+        if rel_angle <= self.pod_params.side_punch_max_angle:
             print ("MAY PUNCH", file=sys.stderr)
             return True
 
@@ -564,6 +603,8 @@ class Tracker:
         if len(self.pos) < 2:
             return None
         dir_ = unit_vector(np.array(self.vel))
+        if linalg.norm(self.vel) < 1.0:
+            return self.pos[-1]
         rel = np.array(self.pos[-1]) - np.array(self.pos[-2])
         dir_ *= linalg.norm(rel)
         ret = np.array(self.pos[-1]) + dir_
@@ -619,91 +660,21 @@ class ArenaDetector:
             print ("Single Arena detected: {}".format(self.detected_track.name), file=sys.stderr)
             return self.detected_track
 
-class Pod:
-    def __init__(self):
-        self.stations = []
-        self.arena = None
-        self.collecting = True
-        self.last_target = (-1, -1)
-        self.last_pos = []
-        self.algo = Clash()
-        self.clash = True
-        self.thrustStrategies = []
-        self.lap = 1
-        self.stat_in_lap = 0
-        self.opponent_pos = []
-        self.arena_detector = ArenaDetector()
-
-    def act(self, pos, dist, angle, target, opponent_pos):
-        if self.clash and self.collecting:
-            #if dist > 7000 and self.clash and self.collecting:
-            self.clash = False
-            self.algo = BlindPlanner()
-        if self.last_target != target:
-            self.stat_in_lap += 1
-            print ("STATION={}".format(self.stat_in_lap), file=sys.stderr)
-
-        if self.collecting and len(self.stations) and self.last_target != target and self.stations[0] == target:
-            self.collecting = False
-            self.lap = 1
-            self.algo = Hub.params.r1planner
-            print ("COLLECTED: {} {}".format(self.stations, self.algo), file=sys.stderr)
-
-        if self.collecting and self.last_target != target:
-            self.stations.append(target)
-            if self.arena == None:
-                self.arena = self.arena_detector.try_detect(self.stations)
-                if self.arena is not None:
-                    print ("Arena detected: {}".format(self.arena.name), file=sys.stderr)
-                    self.arena.opt_params()
-                    #self.algo = Hub.params.r1planner
-                    #self.collecting = False
-                    #self.stations = self.arena.stations
-                else:
-                    print("ARENA NOT DETECTED", file=sys.stderr)
-
-        if not self.collecting and self.last_target != target and ((self.stat_in_lap % len(self.stations)) == 1):
-            print ("LAP: {}".format(self.lap), file=sys.stderr)
-            self.lap +=  1
-        if self.lap == 3 and (self.stat_in_lap % len(self.stations) == 0) and self.last_target != target:
-            print ("PHOTOFINISH..........", file=sys.stderr)
-            self.algo = BlindPlanner(br=False)
-
-        if self.last_target != target:
-            self.algo.plan(pos, dist, angle, target, self.stations)
-
-        rad = -1
-        if 0 and len(self.last_pos) >= 3:
-            p_center, rad = circ_rad(self.last_pos[-2], self.last_pos[-1], pos)
-        else:
-            p_center, rad = (0., 0.), 23000
-        new_target, thrust, boost = self.algo.act(pos, dist, angle, target, self.last_pos, p_center, rad, opponent_pos)
-        if self.clash and self.collecting and self.algo.dist > 2000:
-            self.clash = False
-            self.algo = BlindPlanner()
-        if not self.collecting and self.last_target != target:
-            print ("ROTATING", file=sys.stderr)
-            self.stations = self.stations[1:] +[self.stations[0]]
-
-        else:
-            print ("NOT ROTATING", file=sys.stderr)
-        self.last_target = target
-        self.last_pos.append(pos)
-        if len(self.last_pos) > 10:
-            self.last_pos = self.last_pos[1:]
-        for strategy in self.thrustStrategies:
-            thr2 = strategy.get_thrust(dist, angle, target, rad)
-            if thr2 < thrust:
-                thr2 = thrust
-        return new_target, thrust, boost
-
 arena_detector = ArenaDetector()
+defence_params = DefencePodParams()
+offence_params = OffencePodParams()
 
 if __name__ == "__main__":
-    Tracker.me = Tracker(), Tracker()
-    Tracker.other = Tracker(), Tracker()
-
     num_laps = int(input())
+    Tracker.me = Tracker(num_laps), Tracker(num_laps)
+    Tracker.other = Tracker(num_laps), Tracker(num_laps)
+    Tracker.me[0].pod_params = offence_params
+    Tracker.me[1].pod_params = defence_params
+    Tracker.other[0].pod_params = OpponentPodParams()
+    Tracker.other[1].pod_params = OpponentPodParams()
+    Tracker.other[0].leader = True
+    Tracker.other[1].leader = False
+
     check_point_count = int(input())
     stations = []
     print ("num_check_points={}".format(check_point_count), file=sys.stderr)
@@ -728,5 +699,20 @@ if __name__ == "__main__":
             x, y, vx, vy, angle, next_cp = [int(i) for i in input().split()]
             tracker.report_pos((x, y), (vx, vy), angle, next_cp)
 
+        if Tracker.me[0].passed_stations < Tracker.me[1].passed_stations:
+            Tracker.me[0].pod_params = defence_params
+            Tracker.me[1].pod_params = offence_params
+        else:
+            Tracker.me[0].pod_params = offence_params
+            Tracker.me[1].pod_params = defence_params
+
+        if Tracker.other[0].passed_stations < Tracker.other[1].passed_stations:
+            Tracker.other[1].leader = True
+            Tracker.other[0].leader = False
+        else:
+            Tracker.other[0].leader = True
+            Tracker.other[1].leader = False
+
         Tracker.me[0].act()
         Tracker.me[1].act()
+
