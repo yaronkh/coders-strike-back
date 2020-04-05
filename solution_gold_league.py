@@ -553,7 +553,7 @@ class Tracker:
         self.stations = []
         self.time_left_to_punch = 0
         self.num_laps = num_laps
-        self.passed_stations = 0
+        self.passed_stations = -1
         self.me = me # type: boolean
 
     def act(self):
@@ -695,6 +695,29 @@ class Defender(Tracker):
         self.station_id = -1
         self.leader_origin = (0, 0)
         self.leader_target = (0, 0)
+        self.leader_next = (0, 0)
+
+    def calc_target_full_block(self, leader):
+        p23 = np.array(leader.pos[-1]) - np.array(self.leader_target)
+        p23 = p23 / linalg.norm(p23) * 800
+        target = np.array(self.leader_target) + p23
+        return target
+
+    def calc_safe_target_pos(self):
+        p21 = unit_vector(np.array(self.leader_origin) - np.array(self.leader_target))
+        p23 = unit_vector(np.array(self.leader_next) - np.array(self.leader_target))
+        p_dir = (p21 + p23) * 600 + np.array(self.leader_target)
+        return (p_dir[0], p_dir[1])
+
+    def is_self_blocking(self, leader):
+        if all_leader.me == False:
+            return False
+
+        print ("ME STATIONS:{} {}".format(all_leader.passed_stations, self.station_id), file=sys.stderr)
+        if all_leader.passed_stations >= self.station_id:
+            return False
+
+        return True
 
     def act(self):
         leader = opponent_leader
@@ -703,15 +726,17 @@ class Defender(Tracker):
             self.leader_origin = leader.stations[0]
             p23 = np.array(self.leader_origin) - np.array(leader.stations[1])
             self.leader_target = leader.stations[1]
+            self.leader_next = leader.stations[2]
             p23 = p23 * 0.2
             target = leader.stations[1] + p23
             self.station_id = leader.passed_stations + 2
             self.stations = leader.stations[1:] +[leader.stations[0]]
             self.algo.plan(self.pos[-1], self.angle, target, self.stations, self, self.arena_params)
 
-        p23 = np.array(leader.pos[-1]) - np.array(self.leader_target)
-        p23 = p23 / linalg.norm(p23) * 800
-        target = self.leader_target + p23
+        if self.is_self_blocking(leader):
+            target = self.calc_safe_target_pos()
+        else:
+            target = self.calc_target_full_block(leader)
 
         shield = self.need_protection()
         print ("defender shield={}".format(shield), file=sys.stderr)
@@ -787,8 +812,8 @@ offence_params = OffencePodParams()
 
 opponent_leader = None
 opponent_follower = None
-leader = None
-second = None
+all_leader = None
+all_second = None
 
 if __name__ == "__main__":
     num_laps = int(input())
@@ -824,7 +849,7 @@ if __name__ == "__main__":
             tracker.report_pos((x, y), (vx, vy), angle, next_cp)
 
         opponent_leader, opponent_follower = Tracker.leader(Tracker.other[0], Tracker.other[1])
-        leader, second = Tracker.leader(Tracker.me[0], opponent_leader)
+        all_leader, all_second = Tracker.leader(Tracker.me[0], opponent_leader)
 
         Tracker.me[0].act()
         Tracker.me[1].act()
