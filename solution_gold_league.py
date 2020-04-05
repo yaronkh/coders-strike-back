@@ -374,6 +374,8 @@ class GuardPostStrategy:
         self.target = (0, 0)
         self.algo = BlindPlanner()
         self.station = []
+        self.in_position = False
+        self.rot_to_new_pos = False
 
     def plan(self, pos, angle, target, stations, tracker, params
             ):
@@ -384,18 +386,29 @@ class GuardPostStrategy:
         self.tracker = tracker
         self.thrust = 100
         self.target = target
+        self.in_position = False
+        self.rot_to_new_pos = False
         self.algo.plan(pos, angle, target, stations, tracker, params)
 
     def act(self, pos, angle_abs, target):
-        rel = np.array(self.target) - np.array(pos)
+        rel = np.array(target) - np.array(pos)
         dist = linalg.norm(rel)
         targ_dir = rel / dist
         vel_targ = np.dot(self.tracker.vel, targ_dir)
         brake_dist = PodKinematics.braking_dist(vel_targ)
-        if dist < ArenaParams.station_rad + 500 or brake_dist >= dist:
+        if dist < ArenaParams.station_rad  or brake_dist >= dist:
+            self.in_position = True
             return opponent_leader.pos[-1], 0, False
+        elif self.in_position:
+            angle_abs_rad = np.radians(angle_abs)
+            h = (math.cos(angle_abs_rad), math.sin(angle_abs_rad))
+            angle_to_new = math.fabs(angle_between(h, targ_dir))
+            print ("ANGLE ADJUST = {}".format(angle_to_new), file=sys.stderr)
+            if angle_to_new > 45:
+                return target, 0, False
+            return self.algo.act(pos, angle_abs, target)
         else:
-            return self.algo.act(pos, angle_abs, self.target)
+            return self.algo.act(pos, angle_abs, target)
 
 class BlindPlanner:
     def __init__(self, br=True):
@@ -528,7 +541,7 @@ class Tracker:
     me = None
     other = None
 
-    def __init__(self, num_laps):
+    def __init__(self, num_laps, me):
         self.num_laps = 0
         self.arena_params = None
         self.pod_params = None
@@ -541,6 +554,7 @@ class Tracker:
         self.time_left_to_punch = 0
         self.num_laps = num_laps
         self.passed_stations = 0
+        self.me = me # type: boolean
 
     def act(self):
         print ("VEL {}".format(linalg.norm(self.vel)), file=sys.stderr)
@@ -674,12 +688,13 @@ class Tracker:
         return ret[0], ret[1]
 
 class Defender(Tracker):
-    def __init__(self, num_laps):
-        Tracker.__init__(self, num_laps)
+    def __init__(self, num_laps, me):
+        Tracker.__init__(self, num_laps, me)
         self.algo = GuardPostStrategy(num_laps)
         self.stations = []
         self.station_id = -1
         self.leader_origin = (0, 0)
+        self.leader_target = (0, 0)
 
     def act(self):
         leader = opponent_leader
@@ -687,15 +702,16 @@ class Defender(Tracker):
         if leader.passed_stations >= self.station_id:
             self.leader_origin = leader.stations[0]
             p23 = np.array(self.leader_origin) - np.array(leader.stations[1])
+            self.leader_target = leader.stations[1]
             p23 = p23 * 0.2
             target = leader.stations[1] + p23
             self.station_id = leader.passed_stations + 2
             self.stations = leader.stations[1:] +[leader.stations[0]]
             self.algo.plan(self.pos[-1], self.angle, target, self.stations, self, self.arena_params)
 
-        p23 = np.array(self.leader_origin) - np.array(leader.stations[1])
-        p23 = p23 * 0.2
-        target = leader.stations[1] + p23
+        p23 = np.array(leader.pos[-1]) - np.array(self.leader_target)
+        p23 = p23 / linalg.norm(p23) * 800
+        target = self.leader_target + p23
 
         shield = self.need_protection()
         print ("defender shield={}".format(shield), file=sys.stderr)
@@ -771,11 +787,13 @@ offence_params = OffencePodParams()
 
 opponent_leader = None
 opponent_follower = None
+leader = None
+second = None
 
 if __name__ == "__main__":
     num_laps = int(input())
-    Tracker.me = Tracker(num_laps), Defender(num_laps)
-    Tracker.other = Tracker(num_laps), Tracker(num_laps)
+    Tracker.me = Tracker(num_laps, me=True), Defender(num_laps, me=True)
+    Tracker.other = Tracker(num_laps, me=False), Tracker(num_laps, me=False)
     Tracker.me[0].pod_params = offence_params
     Tracker.me[1].pod_params = defence_params
     Tracker.other[0].pod_params = OpponentPodParams()
@@ -806,6 +824,7 @@ if __name__ == "__main__":
             tracker.report_pos((x, y), (vx, vy), angle, next_cp)
 
         opponent_leader, opponent_follower = Tracker.leader(Tracker.other[0], Tracker.other[1])
+        leader, second = Tracker.leader(Tracker.me[0], opponent_leader)
 
         Tracker.me[0].act()
         Tracker.me[1].act()
