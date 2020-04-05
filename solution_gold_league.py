@@ -641,7 +641,7 @@ class Tracker:
             if self.can_deliver_puch(other):
                 d = self.dist(other.pos[-1])
                 print ("PUNCH {}!!!!!!".format(d), file=sys.stderr)
-                shell = False
+                shell = True if d < 1100 else False
                 self.write(other.next_pos(), 100, True, shell)
                 self.time_left_to_punch = self.pod_params.num_punchs
                 return True
@@ -853,4 +853,3 @@ if __name__ == "__main__":
 
         Tracker.me[0].act()
         Tracker.me[1].act()
-
