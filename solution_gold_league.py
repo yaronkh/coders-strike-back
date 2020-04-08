@@ -10,15 +10,16 @@ import copy
 class PodParams:
     def __init__(self):
         self.planner = Planner()
-        self.side_puch_distance = 1000
         self.side_punch_max_angle = 30
         self.shell_punch_dist = 0
         self.num_punchs = 5
+        self.rel_vel_for_crash_with_shield = 200
+        self.num_of_turns_to_impact = 3
+        self.pod_rad = 500
 
 class OpponentPodParams(PodParams):
     def __init__(self):
         self.planner = Planner()
-        self.side_puch_distance = 1800
         self.side_punch_max_angle = 30
         self.collision_min_vel = 100
         self.num_punchs = 0
@@ -30,7 +31,6 @@ class OffencePodParams(PodParams):
 class DefencePodParams(PodParams):
     def __init__(self):
         PodParams.__init__(self)
-        self.side_puch_distance = 2000
         self.side_punch_max_angle = 60
         self.shell_punch_dist = 0
         self.num_punchs = 0
@@ -73,6 +73,7 @@ class MehumashParams(ArenaParams):
         #self.break_fac = 0.0
         self.break_fac = 0.14
         self.vel_const = 18
+        self.gtKp = 0.6
         #self.r100 = 6000
 
 class HostileParams(ArenaParams):
@@ -97,11 +98,24 @@ class ArrowParams(ArenaParams):
     def __init__(self):
         ArenaParams.__init__(self)
         self.vel_const = 6.0
+        self.gtKp = 0.3
+
+class PyramidParams(ArenaParams):
+    def __init__(self):
+        ArenaParams.__init__(self)
+        self.gtKp = 0.3
+        self.vel_const = 10.0
+
+class TrapezParams(ArenaParams):
+    def __init__(self):
+        ArenaParams.__init__(self)
+        self.vel_const = 10.0
 
 class DaltonParams(ArenaParams):
     def __init__(self):
         ArenaParams.__init__(self)
         self.r1planner = BlindPlanner()
+        self.gtKp = 0.3
 
 class TriangleParams(ArenaParams):
     def __init__(self):
@@ -555,6 +569,8 @@ class Tracker:
         self.num_laps = num_laps
         self.passed_stations = -1
         self.me = me # type: boolean
+        self.boost = False
+        self.boost_turns = 0
 
     def act(self):
         print ("VEL {}".format(linalg.norm(self.vel)), file=sys.stderr)
@@ -567,10 +583,19 @@ class Tracker:
         elif self.attempt_punch():
             return
         shield = False #self.need_protection()
+        if self.time_left_to_punch > 0:
+            self.time_left_to_punch -= 1
+        elif not shield and self.attempt_punch():
+            return
         tc, thrust, boost = self.pod_params.planner.act(self.pos[-1], self.angle, self.stations[0])
         self.write(tc, thrust, boost, shield)
 
     def write(self, tc, thrust, boost, shield):
+        if not self.boost and boost:
+            self.boost_turns = 4
+            self.boost = boost
+        if self.boost_turns > 0:
+            self.boost_turns -= 1
         if shield:
             print(str(int(tc[0])) + " " + str(int(tc[1]))+ " SHIELD")
         elif boost:
@@ -634,14 +659,31 @@ class Tracker:
         angle_deg = np.degrees(angle)
         return angle_deg
 
+    def rel_vel(self, other):
+        v = np.array(self.vel) - np.array(other.vel)
+        return linalg.norm(v)
+
+    def going_to_collide(self, other, num_turns):
+        rvel = np.array(other.vel) - np.array(self.vel)
+        rpos = np.array(self.pos[-1]) - np.array(other.pos[-1])
+        rpos_u = unit_vector(rpos)
+        angle = angle_between(rvel, rpos)
+        angle = math.fabs(angle)
+        if angle >= 90:
+            return False
+        vc = np.dot(rvel, rpos_u)
+        d = linalg.norm(rpos) - 2 * self.pod_params.pod_rad
+        print ("GOING_TO_COLLIDE d={} vc={} num_turns={}".format(d, vc, num_turns), file=sys.stderr)
+        return (d / vc) <= num_turns
+
     def attempt_punch(self):
         if len(self.pos) < 2:
             return False
         for other in Tracker.other:
             if self.can_deliver_puch(other):
-                d = self.dist(other.pos[-1])
-                print ("PUNCH {}!!!!!!".format(d), file=sys.stderr)
-                shell = True if d < 1100 else False
+                rvel = self.rel_vel(other)
+                shell = self.going_to_collide(other, 1.0) and (rvel > self.pod_params.rel_vel_for_crash_with_shield or self.boost_turns > 0)
+                print ("PUNCH {} shell={} boost_turns={}!!!!!!".format(rvel, shell, self.boost_turns), file=sys.stderr)
                 self.write(other.next_pos(), 100, True, shell)
                 self.time_left_to_punch = self.pod_params.num_punchs
                 return True
@@ -651,18 +693,17 @@ class Tracker:
         for other in Tracker.other:
             if len(other.pos) < 2:
                 continue
-            if linalg.norm(other.vel) < other.pod_params.collision_min_vel:
+            rvel = self.rel_vel(other)
+            if rvel <= self.pod_params.rel_vel_for_crash_with_shield:
                 continue
-            if other.can_deliver_puch(self):
+            if self.going_to_collide(other, 1.0):
                 return True
         return False
 
 
     def can_deliver_puch(self, other):
-        d_to_other = self.dist(other.pos[-1])
-        print ("DISTANCE={}".format(d_to_other), file=sys.stderr)
-        if d_to_other > self.pod_params.side_puch_distance:
-                return False
+        if not self.going_to_collide(other, self.pod_params.num_of_turns_to_impact):
+            return False
         fc_dir = np.degrees(math.atan2(self.vel[1], self.vel[0]))
         fdir = self.direction_rel_to(other)
         rel_angle = math.fabs(fc_dir - fdir)
@@ -771,14 +812,14 @@ class Arena:
 class ArenaDetector:
     tracks = [Arena("hostile", [(13890, 1958), (8009, 3263), (2653, 7002), (10035, 5969)], HostileParams()),
               Arena("hostile2", [(9409, 7247), (5984, 4264), (14637, 1420), (3470, 7203)], HostileParams()),
-              Arena("pyramid", [(7637, 5988), (3133, 7544), (9544, 4408), (14535, 7770), (6312, 4294), (7782, 851)]),
+              Arena("pyramid", [(7637, 5988), (3133, 7544), (9544, 4408), (14535, 7770), (6312, 4294), (7782, 851)], PyramidParams()),
               Arena("triangle",[(6012, 5376), (11308, 2847), (7482, 6917)], TriangleParams()),
               Arena("dalton", [(9589, 1395), (3618, 4434), (8011, 7920), (13272, 5530)], DaltonParams()),
               Arena("makbilit", [(12942, 7222), (5655, 2587), (4107, 7431), (13475, 2323)], MacbilitParams()),
               Arena("arrow", [(10255, 4946), (6114, 2172), (3048, 5194), (6276, 7762), (14119, 7768), (13897, 1216)], ArrowParams()),
               Arena("Shosh",  [(9116, 1857), (5007, 5288), (11505, 6074)], ShoshParams()),
               Arena("Til",  [(10558, 5973), (3565, 5194), (13578, 7574), (12430, 1357)]),
-              Arena("trapez",  [(11201, 5443), (7257, 6657), (5452, 2829), (10294, 3341)]),
+              Arena("trapez",  [(11201, 5443), (7257, 6657), (5452, 2829), (10294, 3341)], TrapezParams()),
               Arena("Mehumash", [(4049, 4630), (13054, 1928), (6582, 7823), (7494, 1330), (12701, 7080)], MehumashParams()),
               Arena("Trampoline",  [(3307, 7251), (14572, 7677), (10588, 5072), (13100, 2343), (4536, 2191), (7359, 4930)], TrampolineParams()),
               Arena("Zigzag", [(10660, 2295), (8695, 7469), (7225, 2174), (3596, 5288), (13862, 5092)],ZigzagParams())
