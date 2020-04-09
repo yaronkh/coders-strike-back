@@ -36,12 +36,13 @@ class DefencePodParams(PodParams):
         self.num_punchs = 0
 
 class ArenaParams:
-    station_rad = 300
+    station_rad = 600
     friction_fac = 0.85 # the current speed vector of each pod is multiplied by that factor
     def __init__(self):
         self.r100 = 1800.
         self.thrust_rad_100 = 3300.
         self.minimal_straight_dist = 1000.
+        self.hard_drift_turns = 4
         self.break_dist = 0
         self.break_fac = 0.30
         self.Kp = 0.1
@@ -110,6 +111,7 @@ class TrapezParams(ArenaParams):
     def __init__(self):
         ArenaParams.__init__(self)
         self.vel_const = 10.0
+        self.gtKp = 1.5
 
 class DaltonParams(ArenaParams):
     def __init__(self):
@@ -339,6 +341,12 @@ class Planner:
         #self.thrust = 100
         self.max_alpha = 1.0 + 300.0 / d
 
+    def hard_drift_target(self, target):
+        ntarg = self.stations[1]
+        p = unit_vector(np.array(ntarg) - np.array(target)) * self.tracker.pod_params.pod_rad + np.array(target)
+        return (p[0], p[1])
+
+
     def act(self, pos,  angle_abs, target):
         angle = angleabs2angle(angle_abs, target, pos)
         alpha = closest_point_to_segment(self.stations[-1], self.stations[0], pos)
@@ -364,10 +372,19 @@ class Planner:
             if self.state != 2:
                 self.gt_regulator.reset(self.tracker, self.params)
             self.state = 2
+            d = self.tracker.dist(target) - self.params.station_rad
+            vel = linalg.norm(self.tracker.vel)
+            turns = d / vel
+            hard_drift = False
+            if turns <= self.params.hard_drift_turns:
+                print ("HARD DRIFT", file=sys.stderr)
+                target = self.hard_drift_target(target)
+                hard_drift = True
             thrust = self.regulator.act(target, angle)
             print ("state2: moving to {}".format(target), file=sys.stderr)
             npos, thrust, boost = target, thrust, False
-            npos = self.gt_regulator.act(npos, pos)
+            if not hard_drift:
+                npos = self.gt_regulator.act(npos, pos)
         else:
             #thrust = 30 if angle > 3 else 100
             thrust = self.regulator.act(target, angle)
@@ -403,6 +420,7 @@ class GuardPostStrategy:
         self.in_position = False
         self.rot_to_new_pos = False
         self.algo.plan(pos, angle, target, stations, tracker, params)
+        self.tolerance = ArenaParams.station_rad - self.tracker.pod_params.pod_rad
 
     def act(self, pos, angle_abs, target):
         rel = np.array(target) - np.array(pos)
@@ -410,7 +428,7 @@ class GuardPostStrategy:
         targ_dir = rel / dist
         vel_targ = np.dot(self.tracker.vel, targ_dir)
         brake_dist = PodKinematics.braking_dist(vel_targ)
-        if dist < ArenaParams.station_rad  or brake_dist >= dist:
+        if dist < self.tolerance or brake_dist >= dist:
             self.in_position = True
             return opponent_leader.pos[-1], 0, False
         elif self.in_position:
@@ -894,3 +912,4 @@ if __name__ == "__main__":
 
         Tracker.me[0].act()
         Tracker.me[1].act()
+
