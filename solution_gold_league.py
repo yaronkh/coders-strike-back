@@ -43,6 +43,8 @@ class ArenaParams:
         self.thrust_rad_100 = 3300.
         self.minimal_straight_dist = 1000.
         self.hard_drift_turns = 4
+        self.super_hard_drift_turns = 0.0
+        self.start_with_boost = False
         self.break_dist = 0
         self.break_fac = 0.30
         self.Kp = 0.1
@@ -65,6 +67,10 @@ class MacbilitParams(ArenaParams):
     def __init__(self):
         ArenaParams.__init__(self)
         self.r100 = 1800.
+
+class TilParams(ArenaParams):
+    def __init__(self):
+        ArenaParams.__init__(self)
 
 class MehumashParams(ArenaParams):
     def __init__(self):
@@ -112,12 +118,14 @@ class TrapezParams(ArenaParams):
         ArenaParams.__init__(self)
         self.vel_const = 10.0
         self.gtKp = 1.5
+        self.super_hard_drift_turns = 1.5
 
 class DaltonParams(ArenaParams):
     def __init__(self):
         ArenaParams.__init__(self)
         self.r1planner = BlindPlanner()
         self.gtKp = 0.3
+        self.start_with_boost = True
 
 class TriangleParams(ArenaParams):
     def __init__(self):
@@ -152,7 +160,7 @@ def angleabs2angle(angle_abs, target, pos):
     angle_uv = (math.cos(angle_abs_rad), math.sin(angle_abs_rad))
     t = np.array(target) - np.array(pos)
     angle = angle_between(angle_uv, t)
-    return np.degrees(angle)
+    return angle
 
 
 def angle_between(v1, v2):
@@ -169,8 +177,10 @@ def angle_between(v1, v2):
     v2_u = unit_vector(v2)
     ret = np.degrees(np.arccos(np.clip(np.dot(v1_u, v2_u), -1.0, 1.0)))
     cross = np.cross(v1_u, v2_u)
-    return ret if cross >= 0 else -ret
-
+    if cross >= 0:
+        return ret
+    else:
+        return -ret
 
 def get_intersect(a1, a2, b1, b2):
     """
@@ -378,7 +388,10 @@ class Planner:
             hard_drift = False
             if turns <= self.params.hard_drift_turns:
                 print ("HARD DRIFT", file=sys.stderr)
-                target = self.hard_drift_target(target)
+                if turns <= self.params.super_hard_drift_turns:
+                    target = self.stations[1]
+                else:
+                    target = self.hard_drift_target(target)
                 hard_drift = True
             thrust = self.regulator.act(target, angle)
             print ("state2: moving to {}".format(target), file=sys.stderr)
@@ -448,17 +461,22 @@ class BlindPlanner:
         self.regulator = PIDThrustRegulator()
         self.gt_regulator = GoToTargetRegulator()
         self.aim = True
+        self.tracker = None
         pass
 
     def plan(self, pos, angle, target, stations, tracker, params):
+        self.tracker = tracker
         self.aim = True
         self.regulator.reset(tracker, params)
         self.gt_regulator.reset(tracker, params)
         pass
 
     def act(self, pos, angle_abs, target):
+        print ("GOING To CALL angleabs2angle", file=sys.stderr)
         angle = angleabs2angle(angle_abs, target, pos)
+        print ("RETURNED {}".format(angle), file=sys.stderr)
         boost = False
+        print ("ACTING {} abs={}".format(angle, angle_abs), file=sys.stderr)
         if math.fabs(angle) >= 90 and self.aim:
             return target, 0, False
         else:
@@ -466,6 +484,9 @@ class BlindPlanner:
         angle_ = math.fabs(angle)
         thrust = self.regulator.act(target, angle)
         tc = self.gt_regulator.act(target, pos)
+        print ("START WITH BOOST {} {}".format(self.tracker.arena_params.start_with_boost, self.tracker.boost), file=sys.stderr)
+        if self.tracker.arena_params.start_with_boost and  not self.tracker.boost:
+            boost = True
         return tc, thrust, boost
 
 class GoToTargetRegulator:
@@ -596,10 +617,10 @@ class Tracker:
             print ("TRACHER:ACT now planning", file=sys.stderr)
             self.pod_params.planner.plan(self.pos[-1], self.angle, self.stations[0], self.stations, self, self.arena_params)
 
-        if self.time_left_to_punch > 0:
-            self.time_left_to_punch -= 1
-        elif self.attempt_punch():
-            return
+        #if self.time_left_to_punch > 0:
+        #    self.time_left_to_punch -= 1
+        #elif self.attempt_punch():
+        #    return
         shield = False #self.need_protection()
         if self.time_left_to_punch > 0:
             self.time_left_to_punch -= 1
@@ -609,6 +630,7 @@ class Tracker:
         self.write(tc, thrust, boost, shield)
 
     def write(self, tc, thrust, boost, shield):
+        print ("BOOST={} {}".format(boost, shield), file=sys.stderr)
         if not self.boost and boost:
             self.boost_turns = 4
             self.boost = boost
@@ -634,7 +656,6 @@ class Tracker:
         self.angle = angle
         self.vel = vel
         if next_cp != self.next_cp:
-            print ("next_cp={}".format(next_cp), file=sys.stderr)
             self.passed_stations += 1
             self.stations = arena_detector.stations[next_cp:] + arena_detector.stations[:next_cp]
         self.prev_cp = self.next_cp
@@ -836,7 +857,7 @@ class ArenaDetector:
               Arena("makbilit", [(12942, 7222), (5655, 2587), (4107, 7431), (13475, 2323)], MacbilitParams()),
               Arena("arrow", [(10255, 4946), (6114, 2172), (3048, 5194), (6276, 7762), (14119, 7768), (13897, 1216)], ArrowParams()),
               Arena("Shosh",  [(9116, 1857), (5007, 5288), (11505, 6074)], ShoshParams()),
-              Arena("Til",  [(10558, 5973), (3565, 5194), (13578, 7574), (12430, 1357)]),
+              Arena("Til",  [(10558, 5973), (3565, 5194), (13578, 7574), (12430, 1357)], TilParams()),
               Arena("trapez",  [(11201, 5443), (7257, 6657), (5452, 2829), (10294, 3341)], TrapezParams()),
               Arena("Mehumash", [(4049, 4630), (13054, 1928), (6582, 7823), (7494, 1330), (12701, 7080)], MehumashParams()),
               Arena("Trampoline",  [(3307, 7251), (14572, 7677), (10588, 5072), (13100, 2343), (4536, 2191), (7359, 4930)], TrampolineParams()),
@@ -898,13 +919,9 @@ if __name__ == "__main__":
 
     # game loop
     while True:
-        # x: x position of your pod
-        # y: y position of your pod
-        # next_checkpoint_x: x position of the next check point
-        # next_checkpoint_y: y position of the next check point
-
         for tracker in all_trackers:
-            x, y, vx, vy, angle, next_cp = [int(i) for i in input().split()]
+            s = input()
+            x, y, vx, vy, angle, next_cp = [int(i) for i in s.split()]
             tracker.report_pos((x, y), (vx, vy), angle, next_cp)
 
         opponent_leader, opponent_follower = Tracker.leader(Tracker.other[0], Tracker.other[1])
