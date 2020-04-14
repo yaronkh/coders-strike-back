@@ -8,7 +8,7 @@ import copy
 
 
 class PodParams:
-    max_thrust = 150
+    max_thrust = 200
     rot_vel = 18
     fric_thruts_to_thrust_ratio = 0.85
     def __init__(self):
@@ -42,7 +42,7 @@ class DefencePodParams(PodParams):
 class ArenaParams:
     station_rad = 600
     friction_fac = 0.85 # the current speed vector of each pod is multiplied by that factor
-    station_tolerance = 300
+    station_tolerance = 450
     def __init__(self):
         self.r100 = 3600.
         self.minimal_straight_dist = 1000.
@@ -52,11 +52,7 @@ class ArenaParams:
         self.defender_dist_spare = 0
         self.break_dist = 0
         self.break_fac = 0.30
-        self.Kp = 1.5
-        self.Ki = 0
-        self.Kd = 0
-        self.vel_const = 8.2
-        self.gtKp = 0.8
+        self.gtKp = 0.9
         self.gtKi = 0
         self.gtKd = 0
         self.max_face_dir_error = 45
@@ -68,7 +64,6 @@ class ShoshParams(ArenaParams):
 class TrampolineParams(ArenaParams):
     def __init__(self):
         ArenaParams.__init__(self)
-        self.vel_const = 10.0
 
 class MacbilitParams(ArenaParams):
     def __init__(self):
@@ -87,7 +82,6 @@ class MehumashParams(ArenaParams):
         #self.break_fac = 0.0
         self.break_fac = 0.14
         self.vel_const = 18
-        self.gtKp = 0.6
         #self.r100 = 6000
 
 class HostileParams(ArenaParams):
@@ -95,36 +89,27 @@ class HostileParams(ArenaParams):
         ArenaParams.__init__(self)
         self.break_fac = 0.3
         self.r100 = 2200.
-        self.vel_const = 8.2
 
 
 class ZigzagParams(ArenaParams):
     def __init__(self):
         ArenaParams.__init__(self)
-        #self.vel_const = 2.
         self.r100 = 2000.
-        #self.break_fac = 0.0
         self.break_fac = 0.2
-        self.vel_const = 8.2
-        #self.r100 = 6000
 
 class ArrowParams(ArenaParams):
     def __init__(self):
         ArenaParams.__init__(self)
-        self.vel_const = 6.0
-        self.gtKp = 0.3
 
 class PyramidParams(ArenaParams):
     def __init__(self):
         ArenaParams.__init__(self)
-        self.gtKp = 0.3
-        self.vel_const = 10.0
+        self.gtKp = 0.9
 
 class TrapezParams(ArenaParams):
     def __init__(self):
         ArenaParams.__init__(self)
         self.vel_const = 10.0
-        self.gtKp = 1.5
         self.super_hard_drift_turns = 1.5
 
 class DaltonParams(ArenaParams):
@@ -573,10 +558,10 @@ class BlindPlanner:
     def act(self, pos, angle_abs, target):
         angle = angleabs2angle(angle_abs, target, pos)
         boost = False
-        if math.fabs(angle) >= 90 and self.aim:
-            return target, 0, False, False
-        else:
-            self.aim = False
+        #if math.fabs(angle) >= 90 and self.aim:
+        #    return target, 0, False, False
+        #else:
+        #    self.aim = False
         angle_ = math.fabs(angle)
         tc, thrust = self.gt_regulator.act(target, pos, angle)
         print ("START WITH BOOST {} {}".format(self.tracker.arena_params.start_with_boost, self.tracker.boost), file=sys.stderr)
@@ -600,24 +585,38 @@ class GoToTargetRegulator:
     def act(self, target, pos, angle):
         if self.is_pointing_target(target):
             ret = (self.t[0], self.t[1]), PodParams.max_thrust
-            print ("POINTED TO TARHET", file=sys.stderr)
+            print ("POINTED TO TARGET", file=sys.stderr)
             return ret
         dir_ = self.tracker.direction()
         pt = np.array(target) - np.array(pos)
-        thrust = self.regulate_thrust(target, angle)
-        if dir_[0] != 0. or dir_[1] != 0.:
+        if linalg.norm(self.tracker.vel) < 1.0:
+            thrust = PodParams.max_thrust
+        else:
+            thrust = self.regulate_thrust(target, angle)
+        if dir_[0] != 0. and dir_[1] != 0.:
             self.e = angle_between(pt, dir_)
+            print ("angle between is {}".format(self.e), file=sys.stderr)
         else:
             self.e = 0
         if math.fabs(self.e) > 85:
-            self.reset(self.tolerance, self.tracker, self.params)
-            return target, thrust
+            v = linalg.norm(self.tracker.vel)
+            if v > 200:
+                self.reset(self.tolerance, self.tracker, self.params)
+                #thrust = 11
+                return target, thrust
         self.ie += self.e
         self.dedt = self.last_e - self.e
         Kp = self.params.gtKp
         Ki = self.params.gtKi
         Kd = self.params.gtKd
         c_angle = -(Kp*self.e + Ki*self.ie + Kd*self.dedt)
+        print ("c_angle={}".format(c_angle), file=sys.stderr)
+        #if c_angle > 89:
+        #    c_angle = 89
+        #    thrust = 20
+        #elif c_angle < -89:
+        #    c_angle = 89
+        #    thrust = 20
         self.last_e = self.e
         pt = rotate(pt, degrees=c_angle)
         res = np.array(pos) + pt
@@ -629,14 +628,21 @@ class GoToTargetRegulator:
         tg = unit_vector(self.tracker.vel)
         rad, _ = find_rad_from_two_points_and_tangent(p1, tg, target)
         rad += 600
-        alphad = self.tracker.pod_deflection()
+        alphad = math.fabs(self.tracker.pod_deflection())
         alpha = math.fabs(np.radians(alphad))
         vt = rad * ( 1 - ArenaParams.friction_fac) * math.tan(alpha)
-        print ("rad={} alpha={},VT={}".format(rad, alphad, vt), file=sys.stderr)
+        #print ("rad={} alpha={},VT={}".format(rad, alphad, vt), file=sys.stderr)
+        # verify that the pod is fast enough to handle that radius and velocity
+        omega = np.radians(PodParams.rot_vel)
+        vt2 = rad * omega
+        if vt2 < vt:
+            print ("reducing velocity to meet max radial vel", file=sys.stderr)
+            vt = vt2
         return vt, alpha
 
     def is_pointing_target(self, target):
         if linalg.norm(self.tracker.vel) < 2:
+            print ("VELOCITY TOO SMALL TO TELL POINTING", file=sys.stderr)
             return False
         direc = unit_vector(np.array(self.tracker.vel))
         p1 = np.array(self.tracker.pos[-1])
@@ -645,17 +651,22 @@ class GoToTargetRegulator:
         p3 = np.array(target)
         p4 = p3 + perp
         self.t = get_intersect(p1, p2, p3, p4)
+        fac = location_along_segment(p1, p2, self.t)
         d = dist_pnts(self.t, target)
-        if d < self.tolerance:
+        print ("distance from target={} targ={} pinpoint={} fac={}".format(d, target, self.t, fac), file=sys.stderr)
+        if d < self.tolerance and fac >= 0:
             return True
         return False
 
     def regulate_thrust(self, target, angle):
-        if angle < 1.0:
+        pod_def = self.tracker.pod_deflection()
+        print ("pod deflection={}".format(pod_def), file=sys.stderr)
+        if angle < 1.0 and math.fabs(self.tracker.pod_deflection()) < 1:
             v_tar, alpha = 99999999, 0
         else:
             v_tar, alpha = self.calc_target_vel(target)
         thrust = v_tar*(1 - ArenaParams.friction_fac) / math.cos(alpha)
+        print ("v_tar={} alpha={} thrust={}".format(v_tar, alpha, thrust), file=sys.stderr)
         thrust /= PodParams.fric_thruts_to_thrust_ratio
         if thrust > PodParams.max_thrust:
             thrust = PodParams.max_thrust
@@ -1026,5 +1037,7 @@ if __name__ == "__main__":
         opponent_leader, opponent_follower = Tracker.leader(Tracker.other[0], Tracker.other[1])
         all_leader, all_second = Tracker.leader(Tracker.me[0], opponent_leader)
 
+        print ("OFFENCE DATA", file=sys.stderr)
         Tracker.me[0].act()
+        print ("DEFENCE DATA", file=sys.stderr)
         Tracker.me[1].act()
