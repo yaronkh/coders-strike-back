@@ -52,7 +52,7 @@ class ArenaParams:
         self.defender_dist_spare = 0
         self.break_dist = 0
         self.break_fac = 0.0
-        self.gtKp = 0.9
+        self.gtKp = 1.0
         self.gtKi = 0
         self.gtKd = 0
         self.max_face_dir_error = 45
@@ -97,7 +97,7 @@ class ArrowParams(ArenaParams):
 class PyramidParams(ArenaParams):
     def __init__(self):
         ArenaParams.__init__(self)
-        self.gtKp = 0.9
+        self.gtKp = 1.0
 
 class TrapezParams(ArenaParams):
     def __init__(self):
@@ -467,6 +467,8 @@ class GoToTargetRegulator:
         self.last_e = self.e
         pt = rotate(pt, degrees=c_angle)
         res = np.array(pos) + pt
+        if c_angle > 18 and dist_pnts(pos, target) < 2500:
+            thrust = 50
 
         return (res[0], res[1]), thrust
 
@@ -478,6 +480,7 @@ class GoToTargetRegulator:
         alphad = math.fabs(self.tracker.pod_deflection())
         alpha = math.fabs(np.radians(alphad))
         vt = rad * ( 1 - ArenaParams.friction_fac) * math.tan(alpha)
+        print ("vt={}".format(vt), file=sys.stderr)
         #print ("rad={} alpha={},VT={}".format(rad, alphad, vt), file=sys.stderr)
         # verify that the pod is fast enough to handle that radius and velocity
         omega = np.radians(PodParams.rot_vel)
@@ -522,6 +525,31 @@ class GoToTargetRegulator:
         self.thrust = int(thrust)
         return self.thrust
 
+class ForceBasedCollisionAvoidance:
+    def __init__(self, tracker):
+        self.tracker = tracker
+
+    def calc_tot_evading_force(self):
+        t1 = self.get_evading_force(opponent_leader)
+        t2 = self.get_evading_force(opponent_follower)
+        return t1 + t2
+
+    def get_evading_force(self, other):
+        d1 = dist_pnts(other.pos[-1], self.tracker.pos[-1])
+        if d1 > 1600:
+            return np.array((0, 0))
+        vrel = np.array(other.vel) - np.array(self.tracker.pos[-1])
+        if linalg.norm(vrel) < 300:
+            return np.array((0, 0))
+        p1 = other.pos[-1]
+        p2 = (p1[0] + vrel[0], p1[1] + vrel[1])
+        coll = point_to_line_dist((p1, p2), (0., 0.))
+        if coll < 250:
+            t = vrel * ( 1 - ArenaParams.friction_fac) * .1
+            print ("DETECTED COLLISION", file=sys.stderr)
+            return t
+        return np.array((0, 0))
+
 class Tracker:
     me = None
     other = None
@@ -543,20 +571,38 @@ class Tracker:
         self.boost = False
         self.boost_turns = 0
 
+    def thrust_vec(self, thrust, target):
+        return unit_vector(np.array(target) - np.array(self.pos[-1])) * thrust
+
+    def vec_to_thrust_target(self, thrust_vec):
+        t = linalg.norm(thrust_vec)
+        pos = np.array(self.pos[-1]) + thrust_vec
+        if t > PodParams.max_thrust:
+            t = PodParams.max_thrust
+        return (pos[0], pos[1]), int(np.trunc(t))
+
     def act(self):
         print ("VEL {}".format(linalg.norm(self.vel)), file=sys.stderr)
         if self.prev_cp != self.next_cp:
-            print ("TRACHER:ACT now planning", file=sys.stderr)
+            print ("TRACKER:ACT now planning", file=sys.stderr)
             self.pod_params.planner.plan(self.pos[-1], self.angle, self.stations[0], self.stations, self, self.arena_params)
 
-        shield = self.need_protection()
-        if self.time_left_to_punch > 0:
-            self.time_left_to_punch -= 1
-        elif not shield and self.attempt_punch():
-            return
+        shield = False #self.need_protection()
+        #if self.time_left_to_punch > 0:
+        #    self.time_left_to_punch -= 1
+        #elif not shield and self.attempt_punch():
+        #    return
         tc, thrust, boost, shield2 = self.pod_params.planner.act(self.pos[-1], self.angle, self.stations[0])
-        shield |= shield2
-        self.write(tc, thrust, boost, shield)
+        f = ForceBasedCollisionAvoidance(self)
+        t = f.calc_tot_evading_force()
+        if t[0] == 0.0 and t[1] == 0.0:
+            shield |= shield2
+            self.write(tc, thrust, boost, shield)
+        else:
+            t0 = self.thrust_vec(thrust, tc)
+            tot = t0 + t
+            tc2, thrust = self.vec_to_thrust_target(tot)
+            self.write(tc2, thrust, False, False)
 
     def write(self, tc, thrust, boost, shield):
         if not self.boost and boost:
