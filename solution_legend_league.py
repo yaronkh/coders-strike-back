@@ -12,7 +12,7 @@ class PodParams:
     rot_vel = 18
     fric_thruts_to_thrust_ratio = 0.85
     def __init__(self):
-        self.planner = BlindPlanner()
+        self.planner = Planner3()
         self.side_punch_max_angle = 30
         self.shell_punch_dist = 0
         self.num_punchs = 5
@@ -23,7 +23,7 @@ class PodParams:
 
 class OpponentPodParams(PodParams):
     def __init__(self):
-        self.planner = BlindPlanner()
+        self.planner = Planner3()
         self.side_punch_max_angle = 30
         self.collision_min_vel = 100
         self.num_punchs = 0
@@ -45,13 +45,13 @@ class ArenaParams:
     station_tolerance = 450
     def __init__(self):
         self.r100 = 3600.
-        self.minimal_straight_dist = 1000.
+        self.minimal_straight_dist = 0.
         self.hard_drift_turns = 4
         self.super_hard_drift_turns = 0.0
         self.start_with_boost = False
         self.defender_dist_spare = 0
         self.break_dist = 0
-        self.break_fac = 0.30
+        self.break_fac = 0.0
         self.gtKp = 0.9
         self.gtKi = 0
         self.gtKd = 0
@@ -77,17 +77,11 @@ class TilParams(ArenaParams):
 class MehumashParams(ArenaParams):
     def __init__(self):
         ArenaParams.__init__(self)
-        #self.vel_const = 2.
         self.r100 = 3000.
-        #self.break_fac = 0.0
-        self.break_fac = 0.14
-        self.vel_const = 18
-        #self.r100 = 6000
 
 class HostileParams(ArenaParams):
     def __init__(self):
         ArenaParams.__init__(self)
-        self.break_fac = 0.3
         self.r100 = 2200.
 
 
@@ -95,7 +89,6 @@ class ZigzagParams(ArenaParams):
     def __init__(self):
         ArenaParams.__init__(self)
         self.r100 = 2000.
-        self.break_fac = 0.2
 
 class ArrowParams(ArenaParams):
     def __init__(self):
@@ -115,7 +108,7 @@ class TrapezParams(ArenaParams):
 class DaltonParams(ArenaParams):
     def __init__(self):
         ArenaParams.__init__(self)
-        self.r1planner = BlindPlanner()
+        self.r1planner = Planner3()
         self.gtKp = 1.0
         self.start_with_boost = True
 
@@ -328,170 +321,27 @@ class Simulator:
         d =  PodParams.rot_vel if angle > 0 else -PodParams.rot_vel
         return rotate(np.array(pface), d)
 
-
-class Planner2:
+class Planner3:
     def __init__(self):
-        self.pivot = (0, 0)
-        self.curve_st = [(0, 0), (0, 0)]
-        self.state = 0
-        self.stations = []
-        self.thrust, self.thrust2 = 0, 0
-        self.rfacs = (0, 0)
-        self.rad = 0
-        self.at_planner = BlindPlanner()
-        self.state = 0
-        self.params = None
         self.tracker = None
+        self.gt_regulator = GoToTargetRegulator()
 
     def plan(self, pos, angle_abs, target, stations, tracker, params):
-        self.state = 0
-        self.params = params
-        self.tracker = tracker
-        self.r100 = params.r100
-        x1 = stations[-1][0]
-        y1 = stations[-1][1]
-        x2 = stations[0][0]
-        y2 = stations[0][1]
         angle = angleabs2angle(angle_abs, target, pos)
-        d = math.sqrt((x2 - x1)*(x2 - x1) + (y2 - y1)*(y2 - y1))
-        if d > (2 * self.r100 + params.minimal_straight_dist):
-            rad = self.r100
-            print ("regular: dist={},rad={}".format(d, rad), file=sys.stderr)
-        else:
-            rad = (d - 600) / 2.0
-            print ("special: dist={},rad={}".format(d, rad), file=sys.stderr)
-        self.rad = rad
-        print ("PLAN: {},{},{}".format(stations[-1], stations[0], stations[1]), file=sys.stderr)
-        self.pivot, self.curve_st, self.rfacs, self.angle = calc_node_approach(stations[-1], stations[0], stations[1], rad, params)
-        self.at_planner.plan(pos, angle_abs, self.curve_st[0], stations, tracker, params)
-        print ("RES: pivpt={},st={},facts={},angle={}".format(self.pivot, self.curve_st, self.rfacs, self.angle), file=sys.stderr)
-        self.approach_vel = rad * (1.0 - ArenaParams.friction_fac) * math.tan(np.radians(20))
-
-    def thrust_limit(self):
-        shield = False
-        p12 = unit_vector(np.array(self.stations[0]) - np.array(self.stations[-1]))
-        v1 = np.dot(np.array(self.tracker.vel), p12)
-        if v1 < 0.:
-            return PodParams.max_thrust, shield
-        dist = dist_pnts(self.tracker.pos[-1], self.curve_st[1])
-        #estimate the number of turns
-        n1 = dist / v1
-        n2 = dist / self.approach_vel
-        n = (n1 + n2) / 2.0
-        u = ArenaParams.friction_fac
-        vn = self.approach_vel
-        thrust = (vn - v1 * u**(n - 1))*(1 - u)/(u*(1 - u**(n-1)))
-        if thrust >= PodParams.max_thrust:
-            return PodParams.max_thrust, shield
-        if thrust < 0.0:
-            shield = True
-            thrust = 0
-        return int(thrust), shield
+        self.tracker = tracker
+        self.gt_regulator.reset(ArenaParams.station_tolerance, tracker, params)
 
     def act(self, pos,  angle_abs, target):
         angle = angleabs2angle(angle_abs, target, pos)
-        nose = unit_vector(np.array(self.stations[0]) - self.stations[-1]) * linalg.norm(np.array(self.tracker.vel)) + np.array(pos)
-        alpha = location_along_segment(self.stations[-1], self.stations[0], (nose[0], nose[1]))
-        print ("alpha={}".format(alpha), file=sys.stderr)
-        if alpha < self.rfacs[0]:
-            thrust, shield = self.thrust_limit()
-            alpha0 = location_along_segment(self.stations[-1], self.curve_st[0], nose)
-            target = np.array(self.stations[-1]) * (1.0 - alpha0) + np.array(self.curve_st[0]) * alpha0
-        elif alpha < self.rfacs[1]:
-            thrust, shield = self.thrust_limit()
-            alpha0 = location_along_segment(self.curve_st[0], self.curve_st[1], nose)
-            target = np.array(self.curve_st[0]) * (1.0 - alpha0) + np.array(self.curve_st[1]) * alpha0
-        else:
-            target = self.stations[1]
-
-class Planner:
-    def __init__(self):
-        self.pivot = (0, 0)
-        self.curve_st = [(0, 0), (0, 0)]
-        self.state = 0
-        self.stations = []
-        self.thrust, self.thrust2 = 0, 0
-        self.rfacs = (0, 0)
-        self.rad = 0
-        self.at_planner = BlindPlannerAndAngleRegulator()
-        self.state = 0
-        self.params = None
-        self.tracker = None
-
-    def plan(self, pos, angle_abs, target, stations, tracker, params):
-        self.state = 0
-        self.params = params
-        self.tracker = tracker
-        self.r100 = params.r100
-        x1 = stations[-1][0]
-        y1 = stations[-1][1]
-        x2 = stations[0][0]
-        y2 = stations[0][1]
-        angle = angleabs2angle(angle_abs, target, pos)
-        d = math.sqrt((x2 - x1)*(x2 - x1) + (y2 - y1)*(y2 - y1))
-        if d > (2 * self.r100 + params.minimal_straight_dist):
-            rad = self.r100
-            print ("regular: dist={},rad={}".format(d, rad), file=sys.stderr)
-        else:
-            rad = (d - 600) / 2.0
-            print ("special: dist={},rad={}".format(d, rad), file=sys.stderr)
-        self.rad = rad
-        print ("PLAN: {},{},{}".format(stations[-1], stations[0], stations[1]), file=sys.stderr)
-        self.pivot, self.curve_st, self.rfacs, self.angle = calc_node_approach(stations[-1], stations[0], stations[1], rad, params)
-        self.at_planner.plan(pos, angle_abs, self.curve_st[0], stations, tracker, params)
-        print ("RES: pivpt={},st={},facts={},angle={}".format(self.pivot, self.curve_st, self.rfacs, self.angle), file=sys.stderr)
-        self.state = 0
-        self.stations = stations
-        self.max_alpha = 1.0 + 300.0 / d
-
-    def hard_drift_target(self, target):
-        ntarg = self.stations[1]
-        p = unit_vector(np.array(ntarg) - np.array(target)) * self.tracker.pod_params.pod_rad + np.array(target)
-        return (p[0], p[1])
-
-
-    def act(self, pos,  angle_abs, target):
-        angle = angleabs2angle(angle_abs, target, pos)
-        alpha = location_along_segment(self.stations[-1], self.stations[0], pos)
-        print ("alpha={}".format(alpha), file=sys.stderr)
-        shield = False
-        boost = False
-        if alpha < self.rfacs[0]:
-            if self.state != 0:
-                self.at_planner.plan(pos, angle_abs, self.curve_st[0], self.stations, self.tracker, self.params)
-            self.stat = 0
-            #return self.curve_st[0], self.thrust2, False
-            print ("state0: moving to {}".format(self.curve_st[0]), file=sys.stderr)
-            npos, thrust, boost, shield = self.at_planner.act(pos, angle_abs, self.curve_st[0])
-        elif alpha < self.rfacs[1]:
-            if self.state != 1:
-                self.at_planner.plan(pos, angle_abs, self.curve_st[1], self.stations, self.tracker, self.params)
-            self.state = 1
-            print ("state1: moving to {}".format(self.curve_st[1]), file=sys.stderr)
-            npos, thrust, boost, shield = self.at_planner.act(pos, angle_abs, self.curve_st[1])
-        elif alpha <= self.max_alpha:
-            if self.state != 2:
-                self.at_planner.plan(pos, angle_abs, self.stations[1], self.stations, self.tracker, self.params)
-            self.state = 2
-            d = self.tracker.dist(target) - self.params.station_rad
-            vel = linalg.norm(self.tracker.vel)
-            turns = d / vel
-            hard_drift = False
-            if turns <= self.params.hard_drift_turns:
-                print ("HARD DRIFT", file=sys.stderr)
-                if turns <= self.params.super_hard_drift_turns:
-                    target = self.stations[1]
-                else:
-                    target = self.hard_drift_target(target)
-                hard_drift = True
-            print ("state2: moving to {}".format(target), file=sys.stderr)
-            npos, thrust, boost = target, PodParams.max_thrust, False
-            if not hard_drift:
-                npos, thrust, boost, shield = self.at_planner.act(pos, angle_abs, npos)
-        else:
-            print ("over: moving to {}".format(target), file=sys.stderr)
-            npos, thrust, boost, shield = self.at_planner.act(pos, angle_abs, target)
-        return npos, thrust, boost, False
+        tc, thrust = self.gt_regulator.act(target, pos, angle)
+        if self.gt_regulator.is_pointing:
+            v1 = linalg.norm(self.tracker.vel)
+            if v1 > 10:
+                s = v1 /(1 - ArenaParams.friction_fac)
+                dist = dist_pnts(pos, target)
+                if dist < (s / 2.0):
+                    return self.tracker.stations[1], 0, False, False
+        return tc, thrust, False, False
 
 class GuardPostStrategy:
     """
@@ -553,16 +403,10 @@ class BlindPlanner:
         self.tracker = tracker
         self.aim = True
         self.gt_regulator.reset(ArenaParams.station_tolerance, tracker, params)
-        pass
 
     def act(self, pos, angle_abs, target):
         angle = angleabs2angle(angle_abs, target, pos)
         boost = False
-        #if math.fabs(angle) >= 90 and self.aim:
-        #    return target, 0, False, False
-        #else:
-        #    self.aim = False
-        angle_ = math.fabs(angle)
         tc, thrust = self.gt_regulator.act(target, pos, angle)
         print ("START WITH BOOST {} {}".format(self.tracker.arena_params.start_with_boost, self.tracker.boost), file=sys.stderr)
         if self.tracker.arena_params.start_with_boost and  not self.tracker.boost:
@@ -581,12 +425,15 @@ class GoToTargetRegulator:
         self.params = params
         self.tracker = tracker
         self.tolerance = tolerance
+        self.is_pointing = False
 
     def act(self, target, pos, angle):
         if self.is_pointing_target(target):
+            self.is_pointing = True
             ret = (self.t[0], self.t[1]), PodParams.max_thrust
             print ("POINTED TO TARGET", file=sys.stderr)
             return ret
+        self.is_pointing = False
         dir_ = self.tracker.direction()
         pt = np.array(target) - np.array(pos)
         if linalg.norm(self.tracker.vel) < 1.0:
