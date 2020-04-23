@@ -302,22 +302,33 @@ class Simulator:
     def __init__(self):
         pass
 
-
     def calc_next_turn(self, tracker, target, thrust, boost, shield):
+        #Rotation: the pod rotates to face the target point, with a maximum of 18 degrees (except for the 1rst round).
         pface = self.calc_next_rotation(tracker, target)
+
+        #Acceleration: the pod's facing vector is multiplied by the given thrust value. The result is added to the current speed vector.
         thrust_vec = pface * thrust
-        new_vel = np.array(tracker.vel) * ArenaParams.friction_fac + thrust_vec
+        new_vel = (np.array(tracker.vel) + thrust_vec)#* ArenaParams.friction_fac
+
+        #Movement: The speed vector is added to the position of the pod. If a collision would occur at this point, the pods rebound off each other.
         npos = np.array(tracker.pos[-1]) + new_vel
+
+        #Friction: the current speed vector of each pod is multiplied by 0.85
+        new_vel *= ArenaParams.friction_fac
         new_vel = np.trunc(new_vel)
-        new_angle = np.math.atan2(pface[1], pface[1])
-        return (npos[0], npos[1]), (new_vel[0], new_vel[1]), new_angle
+
+        #The speed's values are truncated and the position's values are rounded to the nearest integer.
+        new_angle = np.degrees(np.math.atan2(pface[1], pface[0]))
+        if new_angle < 0:
+            new_angle += 360
+        return (npos[0], npos[1]), (new_vel[0], new_vel[1]), new_angle)
 
     def calc_next_rotation(self, tracker, target):
         p12 = unit_vector(np.array(target) - np.array(tracker.pos[-1]))
         angle = np.radians(tracker.angle_abs)
         pface = (math.cos(angle), math.sin(angle))
         angle = angle_between(pface, (p12[0], p12[1]))
-        if math.fabs(angle) <=PodParams.rot_vel:
+        if math.fabs(angle) <= PodParams.rot_vel:
             return  (p12[0], p12[1])
         d =  PodParams.rot_vel if angle > 0 else -PodParams.rot_vel
         return rotate(np.array(pface), d)
@@ -924,6 +935,13 @@ class ArenaDetector:
         if num_tracks == 1:
             print ("Single Arena detected: {}".format(self.detected_track.name), file=sys.stderr)
             return self.detected_track
+class MotionPredictor
+     def __init__(self, tracker):
+         self.tracker = tracker
+
+     def predict():
+
+
 
 arena_detector = ArenaDetector()
 defence_params = DefencePodParams()
