@@ -1,0 +1,6 @@
+--languages=C,C++,Vim,Python,Make,Sh,JavaScript
+--c++-kinds=+p
+--fields=+iaS
+--extra=+q
+--sort=foldcase
+--tag-relative
