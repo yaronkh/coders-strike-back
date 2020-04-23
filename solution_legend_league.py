@@ -339,8 +339,19 @@ class Planner3:
             v1 = linalg.norm(self.tracker.vel)
             if v1 > 10:
                 s = v1 /(1 - ArenaParams.friction_fac)
+                num_turns = s / v1 * 0.5
+                n_p = np.array(self.tracker.stations[1]) - np.array(target)
+                ang_abs_rad = np.radians(angle_abs)
+                dir_ = np.array((math.cos(ang_abs_rad), math.sin(ang_abs_rad)))
+                dang = math.fabs(angle_between(n_p, dir_))
+                num_turns_to_rot = dang / PodParams.rot_vel
+                #print ("num_turns_to_rot={} num_turns={}".format(num_turns_to_rot, num_turns), file=sys.stderr)
+                #if num_turns > num_turns_to_rot:
+                #    #print ("NO NEED TO NEUTRAL SO LONG", file=sys.stderr)
+                #    num_turns = num_turns_to_rot
                 dist = dist_pnts(pos, target)
-                if dist < (s / 2.0):
+                turns_to_targ = dist / v1
+                if turns_to_targ <= num_turns:
                     return self.tracker.stations[1], 0, False, False
         return tc, thrust, False, False
 
@@ -474,9 +485,12 @@ class GoToTargetRegulator:
         #    c_angle = 89
         #    thrust = 20
         self.last_e = self.e
-        pt = rotate(pt, degrees=c_angle)
-        res = np.array(pos) + pt
-        if c_angle > 18 and dist_pnts(pos, target) < 2500:
+        pt1 = rotate(pt, degrees=c_angle)
+        a_pt = rotate(pt, degrees=angle)
+        diff = math.fabs(angle_between(pt1, a_pt))
+        print ("DIFF={}".format(diff), file=sys.stderr)
+        res = np.array(pos) + pt1
+        if diff > 18 and dist_pnts(pos, target) < 2500:
             thrust = 50
 
         return (res[0], res[1]), thrust
