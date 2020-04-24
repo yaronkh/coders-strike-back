@@ -302,16 +302,16 @@ class Simulator:
     def __init__(self):
         pass
 
-    def calc_next_turn(self, tracker, target, thrust, boost, shield):
+    def calc_next_turn(self, target, pos, vel, angle, thrust, boost, shield):
         #Rotation: the pod rotates to face the target point, with a maximum of 18 degrees (except for the 1rst round).
-        pface = self.calc_next_rotation(tracker, target)
+        pface = self.calc_next_rotation(pos, angle, target)
 
         #Acceleration: the pod's facing vector is multiplied by the given thrust value. The result is added to the current speed vector.
         thrust_vec = pface * thrust
-        new_vel = (np.array(tracker.vel) + thrust_vec)#* ArenaParams.friction_fac
+        new_vel = (np.array(vel) + thrust_vec)#* ArenaParams.friction_fac
 
         #Movement: The speed vector is added to the position of the pod. If a collision would occur at this point, the pods rebound off each other.
-        npos = np.array(tracker.pos[-1]) + new_vel
+        npos = np.array(pos) + new_vel
 
         #Friction: the current speed vector of each pod is multiplied by 0.85
         new_vel *= ArenaParams.friction_fac
@@ -321,15 +321,15 @@ class Simulator:
         new_angle = np.degrees(np.math.atan2(pface[1], pface[0]))
         if new_angle < 0:
             new_angle += 360
-        return (npos[0], npos[1]), (new_vel[0], new_vel[1]), new_angle)
+        return (npos[0], npos[1]), (new_vel[0], new_vel[1]), new_angle
 
-    def calc_next_rotation(self, tracker, target):
-        p12 = unit_vector(np.array(target) - np.array(tracker.pos[-1]))
-        angle = np.radians(tracker.angle_abs)
+    def calc_next_rotation(self, pos, angle, target):
+        p12 = unit_vector(np.array(target) - np.array(pos))
+        angle = np.radians(angle)
         pface = (math.cos(angle), math.sin(angle))
         angle = angle_between(pface, (p12[0], p12[1]))
         if math.fabs(angle) <= PodParams.rot_vel:
-            return  (p12[0], p12[1])
+            return  np.array((p12[0], p12[1]))
         d =  PodParams.rot_vel if angle > 0 else -PodParams.rot_vel
         return rotate(np.array(pface), d)
 
@@ -472,10 +472,10 @@ class GoToTargetRegulator:
             thrust = self.regulate_thrust(target, angle)
         if dir_[0] != 0. or dir_[1] != 0.:
             self.e = angle_between(pt, dir_)
-            print ("angle between is {}".format(self.e), file=sys.stderr)
+            #print ("angle between is {}".format(self.e), file=sys.stderr)
         else:
             self.e = 0
-        print ("RESULTED ERROR ANGLE={}".format(self.e), file=sys.stderr)
+        #print ("RESULTED ERROR ANGLE={}".format(self.e), file=sys.stderr)
         if math.fabs(self.e) > 89:
             v = linalg.norm(self.tracker.vel)
             if True or v > 200:
@@ -488,7 +488,7 @@ class GoToTargetRegulator:
         Ki = self.params.gtKi
         Kd = self.params.gtKd
         c_angle = -(Kp*self.e + Ki*self.ie + Kd*self.dedt)
-        print ("c_angle={},angle={}".format(c_angle, angle), file=sys.stderr)
+        #print ("c_angle={},angle={}".format(c_angle, angle), file=sys.stderr)
         #if c_angle > 89:
         #    c_angle = 89
         #    thrust = 20
@@ -499,7 +499,7 @@ class GoToTargetRegulator:
         pt1 = rotate(pt, degrees=c_angle)
         a_pt = rotate(pt, degrees=angle)
         diff = math.fabs(angle_between(pt1, a_pt))
-        print ("DIFF={}".format(diff), file=sys.stderr)
+        #print ("DIFF={}".format(diff), file=sys.stderr)
         res = np.array(pos) + pt1
         if diff > 18 and dist_pnts(pos, target) < 2500:
             thrust = 50
@@ -544,7 +544,7 @@ class GoToTargetRegulator:
 
     def regulate_thrust(self, target, angle):
         pod_def = self.tracker.pod_deflection()
-        print ("pod deflection={}".format(pod_def), file=sys.stderr)
+        #print ("pod deflection={}".format(pod_def), file=sys.stderr)
         if angle < 1.0 and math.fabs(self.tracker.pod_deflection()) < 1:
             v_tar, alpha = 99999999, 0
         else:
@@ -571,12 +571,12 @@ class ForceBasedCollisionAvoidance:
 
         t1 = self.get_evading_force(opponent_leader)
         t2 = self.get_evading_force(opponent_follower)
-        print ("t1={},t2={}".format(t1, t2), file=sys.stderr)
+        #print ("t1={},t2={}".format(t1, t2), file=sys.stderr)
         return t1 + t2
 
     def get_evading_force(self, other):
         d1 = dist_pnts(other.pos[-1], self.tracker.pos[-1])
-        print ("d1={}".format(d1), file=sys.stderr)
+        #print ("d1={}".format(d1), file=sys.stderr)
         if d1 > 1600:
             return np.array((0, 0))
         vrel = np.array(other.vel) - np.array(self.tracker.vel)
@@ -599,21 +599,26 @@ class Tracker:
     other = None
 
     def __init__(self, num_laps, me):
-        self.num_laps = 0
-        self.arena_params = None
-        self.pod_params = None
-        self.pos = []
-        self.vel = None
-        self.angle = 0
-        self.next_cp = 0
-        self.prev_cp = 0
-        self.stations = []
+        self.num_laps           = 0
+        self.arena_params       = None
+        self.pod_params         = None
+        self.pos                = []
+        self.angles             = []
+        self.vels               = []
+        self.thrusts            = []
+        self.vel                = None
+        self.angle              = 0
+        self.next_cp            = 0
+        self.prev_cp            = 0
+        self.stations           = []
         self.time_left_to_punch = 0
-        self.num_laps = num_laps
-        self.passed_stations = -1
-        self.me = me # type: boolean
-        self.boost = False
-        self.boost_turns = 0
+        self.num_laps           = num_laps
+        self.passed_stations    = -1
+        self.me                 = me # type: boolean
+        self.boost              = False
+        self.boost_turns        = 0
+        self.predictor          = MotionPredictor(self)
+        self.predictions        = []
 
     def thrust_vec(self, thrust, target):
         return unit_vector(np.array(target) - np.array(self.pos[-1])) * thrust
@@ -639,13 +644,13 @@ class Tracker:
         tc, thrust, boost, shield2 = self.pod_params.planner.act(self.pos[-1], self.angle, self.stations[0])
         f = ForceBasedCollisionAvoidance(self)
         t = f.calc_tot_evading_force()
-        print ("EVADE={}".format(t), file=sys.stderr)
+        #print ("EVADE={}".format(t), file=sys.stderr)
         if t[0] == 0.0 and t[1] == 0.0:
             shield |= shield2
             self.write(tc, thrust, boost, shield)
         else:
             t0 = self.thrust_vec(thrust, tc)
-            print ("TARGET THRUSR={}".format(t0), file=sys.stderr)
+            #print ("TARGET THRUSR={}".format(t0), file=sys.stderr)
             tot = t0 + 3 * t
             tc2, thrust = self.vec_to_thrust_target(tot)
             self.write(tc2, thrust, False, False)
@@ -669,10 +674,31 @@ class Tracker:
             vel_abs = 1.
         return self.vel[0] / vel_abs, self.vel[1] / vel_abs
 
+    def calc_last_thrust(self):
+        if len(self.vels) < 2:
+            return 0
+        vn1 = np.array(self.vels[-1]) / ArenaParams.friction_fac
+        vn  = np.array(self.vels[-2])
+        t   = vn1 - vn
+        return linalg.norm(t)
+
+    @staticmethod
+    def record_data(data, storage):
+        storage.append(data)
+        if len(storage) > 10:
+            storage = storage[1:]
+        return storage
+
+    def store_data(self, pos, vel, angle):
+        thrust = self.calc_last_thrust()
+        print ("LAST THRUST={}".format(thrust), file=sys.stderr)
+        self.pos     = Tracker.record_data(pos, self.pos)
+        self.angles  = Tracker.record_data(angle, self.angles)
+        self.vels    = Tracker.record_data(vel, self.vels)
+        self.thrusts = Tracker.record_data(thrust, self.thrusts)
+
     def report_pos(self, pos, vel, angle, next_cp):
-        self.pos.append(pos)
-        if len(self.pos) > 10:
-            self.pos = self.pos[1:]
+        self.store_data(pos, vel, angle)
         self.angle = angle
         self.vel = vel
         if next_cp != self.next_cp:
@@ -680,6 +706,11 @@ class Tracker:
             self.stations = arena_detector.stations[next_cp:] + arena_detector.stations[:next_cp]
         self.prev_cp = self.next_cp
         self.next_cp = next_cp
+        if len(self.predictions) >= 1:
+            d = dist_pnts(pos, self.predictions[-1])
+            print ("prediction dist={}".format(d), file=sys.stderr)
+        ppos, vel_, ang_ = self.predictor.predict(1)
+        self.predictions = Tracker.record_data(ppos, self.predictions)
 
     @staticmethod
     def leader(p1, p2):
@@ -739,7 +770,7 @@ class Tracker:
             return False
         vc = np.dot(rvel, rpos_u)
         d = linalg.norm(rpos) - 2 * self.pod_params.pod_rad
-        print ("GOING_TO_COLLIDE d={} vc={} num_turns={}".format(d, vc, num_turns), file=sys.stderr)
+        #print ("GOING_TO_COLLIDE d={} vc={} num_turns={}".format(d, vc, num_turns), file=sys.stderr)
         return (d / vc) <= num_turns
 
     def attempt_punch(self):
@@ -749,7 +780,7 @@ class Tracker:
             if self.can_deliver_puch(other):
                 rvel = self.rel_vel(other)
                 shell = self.going_to_collide(other, 1.0) and (rvel > self.pod_params.rel_vel_for_crash_with_shield or self.boost_turns > 0)
-                print ("PUNCH {} shell={} boost_turns={}!!!!!!".format(rvel, shell, self.boost_turns), file=sys.stderr)
+                #print ("PUNCH {} shell={} boost_turns={}!!!!!!".format(rvel, shell, self.boost_turns), file=sys.stderr)
                 self.write(other.next_pos(), PodParams.max_thrust, True, shell)
                 self.time_left_to_punch = self.pod_params.num_punchs
                 return True
@@ -774,7 +805,7 @@ class Tracker:
         fdir = self.direction_rel_to(other)
         rel_angle = math.fabs(fc_dir - fdir)
         if rel_angle <= self.pod_params.side_punch_max_angle:
-            print ("MAY PUNCH", file=sys.stderr)
+            #print ("MAY PUNCH", file=sys.stderr)
             return True
 
         return False
@@ -851,7 +882,7 @@ class Defender(Tracker):
             self.leader_origin = leader.stations[jump - 1]
             p23 = np.array(self.leader_origin) - np.array(leader.stations[jump])
             self.leader_target = leader.stations[jump]
-            print ("SETTING TARGET TO {}".format(self.leader_target), file=sys.stderr)
+            #print ("SETTING TARGET TO {}".format(self.leader_target), file=sys.stderr)
             jn = (jump + 1) % len(leader.stations)
             self.leader_next = leader.stations[jn]
             p23 = p23 * 0.2
@@ -880,9 +911,7 @@ class Defender(Tracker):
         self.write(tc, thrust, boost, shield)
 
     def report_pos(self, pos, vel, angle, next_cp):
-        self.pos.append(pos)
-        if len(self.pos) > 10:
-            self.pos = self.pos[1:]
+        self.store_data(pos, vel, angle)
         self.angle = angle
         self.vel = vel
 
@@ -899,19 +928,20 @@ class Arena:
         return False
 
 class ArenaDetector:
-    tracks = [Arena("hostile", [(13890, 1958), (8009, 3263), (2653, 7002), (10035, 5969)], HostileParams()),
-              Arena("hostile2", [(9409, 7247), (5984, 4264), (14637, 1420), (3470, 7203)], HostileParams()),
-              Arena("pyramid", [(7637, 5988), (3133, 7544), (9544, 4408), (14535, 7770), (6312, 4294), (7782, 851)], PyramidParams()),
-              Arena("triangle",[(6012, 5376), (11308, 2847), (7482, 6917)], TriangleParams()),
-              Arena("dalton", [(9589, 1395), (3618, 4434), (8011, 7920), (13272, 5530)], DaltonParams()),
-              Arena("makbilit", [(12942, 7222), (5655, 2587), (4107, 7431), (13475, 2323)], MacbilitParams()),
-              Arena("arrow", [(10255, 4946), (6114, 2172), (3048, 5194), (6276, 7762), (14119, 7768), (13897, 1216)], ArrowParams()),
-              Arena("Shosh",  [(9116, 1857), (5007, 5288), (11505, 6074)], ShoshParams()),
-              Arena("Til",  [(10558, 5973), (3565, 5194), (13578, 7574), (12430, 1357)], TilParams()),
-              Arena("trapez",  [(11201, 5443), (7257, 6657), (5452, 2829), (10294, 3341)], TrapezParams()),
-              Arena("Mehumash", [(4049, 4630), (13054, 1928), (6582, 7823), (7494, 1330), (12701, 7080)], MehumashParams()),
-              Arena("Trampoline",  [(3307, 7251), (14572, 7677), (10588, 5072), (13100, 2343), (4536, 2191), (7359, 4930)], TrampolineParams()),
-              Arena("Zigzag", [(10660, 2295), (8695, 7469), (7225, 2174), (3596, 5288), (13862, 5092)],ZigzagParams())
+    tracks = [
+              Arena("hostile",    [(13890, 1958), (8009,  3263), (2653,  7002),  (10035,            5969)], HostileParams()),
+              Arena("hostile2",   [(9409,  7247), (5984,  4264), (14637, 1420),  (3470,             7203)], HostileParams()),
+              Arena("pyramid",    [(7637,  5988), (3133,  7544), (9544,  4408),  (14535,            7770),  (6312,             4294),  (7782,             851)],  PyramidParams()),
+              Arena("triangle",   [(6012,  5376), (11308, 2847), (7482,  6917)], TriangleParams()),
+              Arena("dalton",     [(9589,  1395), (3618,  4434), (8011,  7920),  (13272,            5530)], DaltonParams()),
+              Arena("makbilit",   [(12942, 7222), (5655,  2587), (4107,  7431),  (13475,            2323)], MacbilitParams()),
+              Arena("arrow",      [(10255, 4946), (6114,  2172), (3048,  5194),  (6276,             7762),  (14119,            7768),  (13897,            1216)], ArrowParams()),
+              Arena("Shosh",      [(9116,  1857), (5007,  5288), (11505, 6074)], ShoshParams()),
+              Arena("Til",        [(10558, 5973), (3565,  5194), (13578, 7574),  (12430,            1357)], TilParams()),
+              Arena("trapez",     [(11201, 5443), (7257,  6657), (5452,  2829),  (10294,            3341)], TrapezParams()),
+              Arena("Mehumash",   [(4049,  4630), (13054, 1928), (6582,  7823),  (7494,             1330),  (12701,            7080)], MehumashParams()),
+              Arena("Trampoline", [(3307,  7251), (14572, 7677), (10588, 5072),  (13100,            2343),  (4536,             2191),  (7359,             4930)], TrampolineParams()),
+              Arena("Zigzag",     [(10660, 2295), (8695,  7469), (7225,  2174),  (3596,             5288),  (13862,            5092)], ZigzagParams())
             ]
     def __init__(self):
         self.detected_track = None
@@ -935,22 +965,47 @@ class ArenaDetector:
         if num_tracks == 1:
             print ("Single Arena detected: {}".format(self.detected_track.name), file=sys.stderr)
             return self.detected_track
-class MotionPredictor
+
+class MotionPredictor:
      def __init__(self, tracker):
-         self.tracker = tracker
+         self.steady_state = False
+         self.tracker      = tracker
+         self.simulator    = Simulator()
 
-     def predict():
+     def predict_vals(self, t0 ,t1):
+         return 2 * t1 - t0
 
+     def predict(self, turns):
+         if not self.steady_state:
+             l = len(self.tracker.pos)
+             if l == 1:
+                 return self.tracker.pos[-1], self.tracker.vels[-1], self.tracker.angles[-1]
+             elif l == 2:
+                 p21 = (np.array(self.tracker.pos[-1]) - np.array(self.tracker.pos[-2])) * turns
+                 res = p21 + np.array(self.tracker.pos[-2])
+                 return (res[0], res[1]), self.tracker.vels[-1], self.tracker.angles[-1]
+             else:
+                 self.steady_state = True
+         t1 = self.predict_vals(self.tracker.thrusts[-2], self.tracker.thrusts[-1])
+         pos, vel, angle = self.next_turn(turns, self.tracker.stations[0], self.tracker.pos[-1], self.tracker.vels[-1], self.tracker.angles[-1], self.tracker.thrusts[-1], t1)
+         return pos, vel, angle
 
+     def next_turn(self, num_turns, target, pos, vel, angle, t0, t1):
+         pos, vel, angle = self.simulator.calc_next_turn(target, pos, vel, angle, t1, False, False)
+         num_turns -= 1
+         if num_turns == 0:
+             return pos, vel, angle
+         t = self.predict_vals(t0, t1)
+         return self.next_turn(num_turns, target, pos, vel, angle, t1, t)
 
 arena_detector = ArenaDetector()
 defence_params = DefencePodParams()
 offence_params = OffencePodParams()
 
-opponent_leader = None
+opponent_leader   = None
 opponent_follower = None
-all_leader = None
-all_second = None
+all_leader        = None
+all_second        = None
 
 if __name__ == "__main__":
     num_laps = int(input())
@@ -963,7 +1018,7 @@ if __name__ == "__main__":
 
     check_point_count = int(input())
     stations = []
-    print ("num_check_points={}".format(check_point_count), file=sys.stderr)
+    #print ("num_check_points={}".format(check_point_count), file=sys.stderr)
     for _ in range(check_point_count):
         xs, ys = input().split()
         stations.append((int(xs), int(ys)))
