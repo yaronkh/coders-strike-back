@@ -5,6 +5,7 @@ import numpy as np
 from numpy import linalg
 from scipy.special import comb
 import copy
+import random
 
 
 class PodParams:
@@ -12,14 +13,14 @@ class PodParams:
     rot_vel = 18
     fric_thruts_to_thrust_ratio = 0.85
     def __init__(self):
-        self.planner = Planner3()
-        self.side_punch_max_angle = 30
-        self.shell_punch_dist = 0
-        self.num_punchs = 5
+        self.planner                       = Planner3()
+        self.side_punch_max_angle          = 30
+        self.shell_punch_dist              = 0
+        self.num_punchs                    = 5
         self.rel_vel_for_crash_with_shield = 300
-        self.num_of_turns_to_impact = 3
-        self.pod_rad = 350
-        self.brake_with_shield_vel = 300
+        self.num_of_turns_to_impact        = 3
+        self.pod_rad                       = 350
+        self.brake_with_shield_vel         = 300
 
 class OpponentPodParams(PodParams):
     def __init__(self):
@@ -38,24 +39,26 @@ class DefencePodParams(PodParams):
         self.side_punch_max_angle = 60
         self.shell_punch_dist = 0
         self.num_punchs = 0
+        self.pursuit_look_ahead_turns = 3
 
 class ArenaParams:
     station_rad = 600
     friction_fac = 0.85 # the current speed vector of each pod is multiplied by that factor
     station_tolerance = 450
     def __init__(self):
-        self.r100 = 3600.
-        self.minimal_straight_dist = 0.
-        self.hard_drift_turns = 4
+        self.r100                   = 3600.
+        self.minimal_straight_dist  = 0.
+        self.hard_drift_turns       = 4
         self.super_hard_drift_turns = 0.0
-        self.start_with_boost = False
-        self.defender_dist_spare = 100
-        self.break_dist = 0
-        self.break_fac = 0.0
-        self.gtKp = 1.0
-        self.gtKi = 0
-        self.gtKd = 0
-        self.max_face_dir_error = 45
+        self.start_with_boost       = False
+        self.defender_dist_spare    = 1000
+        self.break_dist             = 0
+        self.break_fac              = 0.0
+        self.gtKp                   = 1.0
+        self.gtKi                   = 0
+        self.gtKd                   = 0
+        self.max_face_dir_error     = 45
+        self.mitbader_vel           = 130
 
 class ShoshParams(ArenaParams):
     def __init__(self):
@@ -104,18 +107,20 @@ class TrapezParams(ArenaParams):
         ArenaParams.__init__(self)
         self.vel_const = 10.0
         self.super_hard_drift_turns = 1.5
+        self.mitbader_vel           = 100
 
 class DaltonParams(ArenaParams):
     def __init__(self):
         ArenaParams.__init__(self)
         self.r1planner = Planner3()
-        self.gtKp = 1.0
+        self.gtKp = 0.5
         self.start_with_boost = True
 
 class TriangleParams(ArenaParams):
     def __init__(self):
         ArenaParams.__init__(self)
-        self.planner = BlindPlanner()
+        self.mitbader_vel           = 100
+        #self.planner = BlindPlanner()
 
 def to_array(p):
     return np.array((p[0], p[1]))
@@ -366,18 +371,49 @@ class Planner3:
                     return self.tracker.stations[1], 0, False, False
         return tc, thrust, False, False
 
+class Pursuit:
+    """
+    a strategy to pursuit the opponent leader and deflect him
+    from getting to the next target
+    """
+    def __init__(self, tracker):
+        self.tracker = tracker
+        self.algo = BlindPlanner()
+
+    def plan(self, pos, angle, target, stations, tracker, params
+            ):
+        """
+        stations - the list of stations, the post to defend is the first station
+        """
+        self.stations       = stations[:]
+        self.tracker        = tracker
+        self.algo.plan(pos, angle, target, stations, tracker, params)
+        self.tolerance      = ArenaParams.station_rad - self.tracker.pod_params.pod_rad
+
+    def act(self, pos, angle_abs, target):
+        opp = opponent_leader
+        target, vel, angle = opp.predictor.predict(self.tracker.pod_params.pursuit_look_ahead_turns)
+        print ("PREDICTION={} mypos={} otherpos={}".format(target, self.tracker.pos[-1], opp.pos[-1]), file=sys.stderr)
+        f = ForceBasedCollisionAvoidance(self.tracker)
+        t = f.get_evading_force(Tracker.me[0], 3200)
+        #if t[0] != 0 or t[1] != 0:
+        #    targ, thrust = self.tracker.vec_to_thrust_target(t)
+        #    return targ, thrust, False, False
+        return self.algo.act(pos, angle_abs, target)
+
 class GuardPostStrategy:
     """
     A strategy where the pod rush to a given position
     and does not let the opponent leader to reach it.
     The strategy ends when the opponent reach that target
     """
-    def __init__(self, traker):
-        self.tracker = traker
-        self.target = (0, 0)
-        self.algo = BlindPlanner()
-        self.station = []
-        self.in_position = False
+    def __init__(self, tracker):
+        self.tracker        = tracker
+        self.target         = (0, 0)
+        self.algo           = BlindPlanner()
+        self.pursuit        = Pursuit(tracker)
+        self.station        = []
+        self.in_position    = False
         self.rot_to_new_pos = False
 
     def plan(self, pos, angle, target, stations, tracker, params
@@ -385,16 +421,36 @@ class GuardPostStrategy:
         """
         stations - the list of stations, the post to defend is the first station
         """
-        self.stations = stations[:]
-        self.tracker = tracker
-        self.thrust = PodParams.max_thrust
-        self.target = target
-        self.in_position = False
+        self.stations       = stations[:]
+        self.tracker        = tracker
+        self.target         = target
+        self.in_position    = False
         self.rot_to_new_pos = False
         self.algo.plan(pos, angle, target, stations, tracker, params)
-        self.tolerance = ArenaParams.station_rad - self.tracker.pod_params.pod_rad
+        self.pursuit.plan(pos, angle, target, stations, tracker, params)
+        self.tolerance      = ArenaParams.station_rad - self.tracker.pod_params.pod_rad
+        self.pursuing       = False
+        print ("PPPPPPPPPPPLAN", file=sys.stderr)
 
     def act(self, pos, angle_abs, target):
+        d = dist_pnts(self.tracker.pos[-1], opponent_leader.pos[-1])
+        f = ForceBasedCollisionAvoidance(opponent_leader)
+        in_way, fac = f.in_the_way(self.tracker)
+        is_in_yeshoret = self.tracker.is_in_yeshoret(opponent_leader)
+        print ("pusu={},is_way={},yesho={}".format(self.pursuing, in_way, is_in_yeshoret), file=sys.stderr)
+        face = self.tracker.face_firection()
+        p_rel = np.array(opponent_leader.pos[-1]) - np.array(self.tracker.pos[-1])
+        f_alfa = angle_between(face, p_rel)
+        if not self.tracker.is_in_yeshoret(opponent_leader) or f_alfa > 15:
+            in_way = False
+
+        if (d < 4000 and fac >= 1) or in_way or self.pursuing:
+            self.pursuing = True
+            return self.pursuit.act(pos, angle_abs, target)
+        else:
+            return self.act_prepare(pos, angle_abs, target)
+
+    def act_prepare(self, pos, angle_abs, target):
         rel = np.array(target) - np.array(pos)
         dist = linalg.norm(rel)
         targ_dir = rel / dist
@@ -408,13 +464,13 @@ class GuardPostStrategy:
             h = (math.cos(angle_abs_rad), math.sin(angle_abs_rad))
             angle_to_new = math.fabs(angle_between(h, targ_dir))
             #print ("ANGLE ADJUST = {}".format(angle_to_new), file=sys.stderr)
-            if angle_to_new > 45:
+            if angle_to_new > 30:
                 return target, 0, False, False
             return self.algo.act(pos, angle_abs, target)
         else:
             ar = self.algo.act(pos, angle_abs, target)
             f = ForceBasedCollisionAvoidance(self.tracker)
-            t = f.get_evading_force(Tracker.me[0])
+            t = f.get_evading_force(Tracker.me[0], 3200)
             if t[0] != 0 or t[1] != 0:
                 targ, thrust = self.tracker.vec_to_thrust_target(t)
                 return targ, thrust, False, False
@@ -448,14 +504,16 @@ class GoToTargetRegulator:
         self.reset()
 
     def reset(self, tolerance=0, tracker=None, params=None):
-        self.e = 0
-        self.ie = 0
-        self.last_e = 0
-        self.dedt = 0
-        self.params = params
-        self.tracker = tracker
-        self.tolerance = tolerance
-        self.is_pointing = False
+        self.e               = 0
+        self.ie              = 0
+        self.last_e          = 0
+        self.dedt            = 0
+        self.params          = params
+        self.tracker         = tracker
+        self.tolerance       = tolerance
+        self.is_pointing     = False
+        self.thrust_reducing = PodParams.max_thrust
+        self.is_reducing     = False
 
     def act(self, target, pos, angle):
         if self.is_pointing_target(target):
@@ -481,7 +539,15 @@ class GoToTargetRegulator:
             if True or v > 200:
                 self.reset(self.tolerance, self.tracker, self.params)
                 #thrust = 11
-                return target, thrust
+                if not self.is_reducing:
+                    self.is_reducing = True
+                    self.thrust_reducing = thrust - 30
+                else:
+                    self.thrust_reducing -= 30
+                if self.thrust_reducing < 80:
+                    self.thrust_reducing = 80
+                return target, self.thrust_reducing
+                #return target, thrust
         self.ie += self.e
         self.dedt = self.last_e - self.e
         Kp = self.params.gtKp
@@ -501,9 +567,18 @@ class GoToTargetRegulator:
         diff = math.fabs(angle_between(pt1, a_pt))
         #print ("DIFF={}".format(diff), file=sys.stderr)
         res = np.array(pos) + pt1
-        if diff > 18 and dist_pnts(pos, target) < 2500:
-            thrust = 50
-
+        d = dist_pnts(pos, target)
+        print ("DDD={}".format(d), file=sys.stderr)
+        if diff > 18 and d < 3500:
+            if not self.is_reducing:
+                self.is_reducing = True
+                self.thrust_reducing = thrust - 30
+            else:
+                self.thrust_reducing -= 30
+            if self.thrust_reducing < 80:
+                self.thrust_reducing = 80
+            return (res[0], res[1]), self.thrust_reducing
+        self.is_reducing = False
         return (res[0], res[1]), thrust
 
     def calc_target_vel(self, target):
@@ -569,15 +644,25 @@ class ForceBasedCollisionAvoidance:
         if d2next < 1500:
             return np.array((0, 0))
 
-        t1 = self.get_evading_force(opponent_leader)
-        t2 = self.get_evading_force(opponent_follower)
+        t1 = self.get_evading_force(opponent_leader, 1600)
+        t2 = self.get_evading_force(opponent_follower, 1600)
         #print ("t1={},t2={}".format(t1, t2), file=sys.stderr)
         return t1 + t2
 
-    def get_evading_force(self, other):
+    def in_the_way(self, other):
+        p_t = np.array(self.tracker.stations[0]) - np.array(self.tracker.pos[-1])
+        p_other = np.array(other.pos[-1]) - np.array(self.tracker.pos[-1])
+        res = math.fabs(angle_between(p_t, p_other))
+        f = location_along_segment(self.tracker.pos[-1], self.tracker.stations[0], other.pos[-1])
+        print ("F={}, al={}".format(f, res), file=sys.stderr)
+        if f <= 1 and f > 0:
+            return (res < 15), f
+        return False, f
+
+    def get_evading_force(self, other, rad):
         d1 = dist_pnts(other.pos[-1], self.tracker.pos[-1])
         #print ("d1={}".format(d1), file=sys.stderr)
-        if d1 > 1600:
+        if d1 > rad:
             return np.array((0, 0))
         vrel = np.array(other.vel) - np.array(self.tracker.vel)
         #if linalg.norm(vrel) < 300:
@@ -591,6 +676,8 @@ class ForceBasedCollisionAvoidance:
             if fac <= 0: #check if our pod is behind
                 return ((0., 0.))
             t = vrel * ( 1 - ArenaParams.friction_fac) * 0.5
+            #if self.in_the_way(other):
+            #    t = rotate(t, degrees=90)
             return t
         return np.array((0, 0))
 
@@ -674,6 +761,10 @@ class Tracker:
             vel_abs = 1.
         return self.vel[0] / vel_abs, self.vel[1] / vel_abs
 
+    def face_firection(self):
+        angle_rad = np.radians(self.angles[-1])
+        return math.cos(angle_rad), math.sin(angle_rad)
+
     def calc_last_thrust(self):
         if len(self.vels) < 2:
             return 0
@@ -691,7 +782,7 @@ class Tracker:
 
     def store_data(self, pos, vel, angle):
         thrust = self.calc_last_thrust()
-        print ("LAST THRUST={}".format(thrust), file=sys.stderr)
+        #print ("LAST THRUST={}".format(thrust), file=sys.stderr)
         self.pos     = Tracker.record_data(pos, self.pos)
         self.angles  = Tracker.record_data(angle, self.angles)
         self.vels    = Tracker.record_data(vel, self.vels)
@@ -791,9 +882,10 @@ class Tracker:
             if len(other.pos) < 2:
                 continue
             rvel = self.rel_vel(other)
+            print ("rvel={}".format(rvel), file=sys.stderr)
             if rvel <= self.pod_params.rel_vel_for_crash_with_shield:
                 continue
-            if self.going_to_collide(other, 1.0):
+            if self.going_to_collide(other, 1.2):
                 return True
         return False
 
@@ -814,27 +906,20 @@ class Tracker:
         """
         try to estimate the position in the next loop
         """
-        ret =  np.array(self.pos[-1]) + np.array(self.vel)
-        return ret[0], ret[1]
-        #if len(self.pos) < 2:
-        #    return None
-        #dir_ = unit_vector(np.array(self.vel))
-        #if linalg.norm(self.vel) < 1.0:
-        #    return self.pos[-1]
-        #rel = np.array(self.pos[-1]) - np.array(self.pos[-2])
-        #dir_ *= linalg.norm(rel)
-        #ret = np.array(self.pos[-1]) + dir_
-        #return ret[0], ret[1]
+        ppos, vel, angle = self.predictor.predict(1)
+        return ppos
 
 class Defender(Tracker):
     def __init__(self, num_laps, me):
         Tracker.__init__(self, num_laps, me)
-        self.algo = GuardPostStrategy(num_laps)
-        self.stations = []
-        self.station_id = -1
-        self.leader_origin = (0, 0)
-        self.leader_target = (0, 0)
-        self.leader_next = (0, 0)
+        self.algo               = GuardPostStrategy(num_laps)
+        self.pursuit            = False
+        self.pusuit_has_planned = False
+        self.stations           = []
+        self.station_id         = -1
+        self.leader_origin      = (0, 0)
+        self.leader_target      = (0, 0)
+        self.leader_next        = (0, 0)
 
     def calc_target_full_block(self, leader):
         p23 = np.array(leader.pos[-1]) - np.array(self.leader_target)
@@ -875,6 +960,29 @@ class Defender(Tracker):
         return (my_dist + self.arena_params.defender_dist_spare) <= leader_dist
 
     def act(self):
+        if self.pursuit:
+            if not self.pusuit_has_planned:
+                self.algo.plan(self.pos[-1], self.angle, self.stations[0], self.stations, self, self.arena_params)
+                self.pusuit_has_planned = True
+            target = opponent_leader.stations[0]
+            shield = self.need_protection()
+            #print ("defender shield={}".format(shield), file=sys.stderr)
+
+            if self.time_left_to_punch > 0:
+                self.time_left_to_punch -= 1
+            elif not shield and self.attempt_punch():
+                return
+
+            tc, thrust, boost, shield2 = self.algo.act(self.pos[-1], self.angle, target)
+            shield |= shield2
+            self.write(tc, thrust, boost, shield)
+        else:
+            self.act_guard()
+
+    def is_in_yeshoret(self, other):
+        return self.station_id == (other.passed_stations + 1)
+
+    def act_guard(self):
         leader = opponent_leader
         #print ("CAN_REACH_LEADER={}".format(self.can_reach_target_before_leader(leader)), file=sys.stderr)
         jump = 0
@@ -997,6 +1105,15 @@ class MotionPredictor:
              return pos, vel, angle
          t = self.predict_vals(t0, t1)
          return self.next_turn(num_turns, target, pos, vel, angle, t1, t)
+
+     #def predict_target(self, pos, angle, thrust):
+     #    ang_rad = np.radians(angle)
+     #    if angle <= 1.0:
+     #        pface = np.array((math.cos(ang_rad), math.sin(ang_rad))) * 3000.
+     #        targ = np.array(pos) + pface
+     #        return (targ[0], targ[1])
+
+
 
 arena_detector = ArenaDetector()
 defence_params = DefencePodParams()
