@@ -337,7 +337,7 @@ class Simulator:
         if math.fabs(angle) <= PodParams.rot_vel:
             return  np.array((p12[0], p12[1]))
         d =  PodParams.rot_vel if angle > 0 else -PodParams.rot_vel
-        return rotate(np.array(pface), d)
+        return rotate(np.array(pface), degrees=d)
 
 class Planner3:
     def __init__(self):
