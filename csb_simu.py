@@ -17,6 +17,7 @@ class ArenaParams:
 class PodParams:
     max_thrust = 200
     rot_vel = 18
+    pod_rad = 200
 
 def dist_pnts(m, t):
     mx, my = m
@@ -61,6 +62,11 @@ def angle_between(v1, v2):
     else:
         return -ret
 
+def dist_pnts(m, t):
+    mx, my = m
+    tx, ty = t
+    return math.sqrt((mx - tx)**2 + (my - ty)**2)
+
 class Pod:
     def __init__(self, pos, angle, stations):
         self.pos       = pos
@@ -77,13 +83,12 @@ class Pod:
         self.simulator = Simulator()
 
     def write(self, pipe):
-        next_cp = self.cp_id % len(self.stations) + 1
+        next_cp = (self.cp_id + 1)% len(self.stations)
         write_to_pipe("{} {} {} {} {} {}\n".format(self.pos[0], self.pos[1], self.vel[0], self.vel[1], self.angle, next_cp), pipe)
 
     def read(self, r):
         if self.sh_turns > 0:
             self.sh_turns -= 1
-        print ("R={}".format(r))
         px, py, thrust = r.split(" ")
         if thrust == "BOOST":
             if self.boosted:
@@ -103,6 +108,11 @@ class Pod:
     def next(self):
        ret = self.simulator.calc_next_turn(self.target, self.pos, self.vel, self.angle, self.thrust, self.boost, self.shield)
        self.pos, self.vel, self.angle = ret
+       d = dist_pnts(self.pos, self.stations[(self.cp_id + 1) % len(self.stations)])
+       print ("d={}".format(d))
+       if d <= (ArenaParams.station_rad - PodParams.pod_rad):
+           self.cp_id += 1
+
 
 f = open("/tmp/input", 'w')
 def write_to_pipe(s, pipe):
@@ -173,13 +183,14 @@ class Simulator:
         if math.fabs(angle) <= PodParams.rot_vel:
             return  np.array((p12[0], p12[1]))
         d =  PodParams.rot_vel if angle > 0 else -PodParams.rot_vel
-        return rotate(np.array(pface), d)
+        r =rotate(np.array(pface), degrees=d)
+        return rotate(np.array(pface), degrees=d)
 
 if __name__ == "__main__":
     os.environ["PYTHONUNBUFFERED"] = "1"
     for t in tracks:
         TRACKS[t.name] = t
-    sel_track = TRACKS["Shosh"]
+    sel_track = TRACKS["pyramid"]
     num_laps = 1
     code = sys.argv[1]
     p = subprocess.Popen([code],stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -207,7 +218,7 @@ if __name__ == "__main__":
     all_pods = [runner, follower, opp1, opp2]
     x=[]
     y=[]
-    for _ in range(20):
+    for _ in range(320):
         for pod in all_pods:
             pod.write(p.stdin)
         r = p.stdout.readline().decode()
@@ -222,12 +233,12 @@ if __name__ == "__main__":
                 inp = p.stderr.readline().decode()
                 if inp == '':
                     break
-                print ("DBG: {}".format(inp[:-1]))
+                #print ("DBG: {}".format(inp[:-1]))
             except:
                 break
     fig, ax = plt.subplots()
-    ax.scatter(sx, sy,s=[600]*len(sx),alpha=0.5)
-    ax.scatter(x, y, s=[5]*len(x), alpha=1)
+    ax.scatter(sx, sy,s=[1200]*len(sx),alpha=0.5)
+    ax.scatter(x, y, s=[50]*len(x), alpha=1)
     fig.tight_layout()
     plt.show()
 
