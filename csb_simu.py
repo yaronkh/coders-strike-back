@@ -7,6 +7,7 @@ import math
 import subprocess
 import numpy as np
 from numpy import linalg
+import matplotlib.pyplot as plt
 
 class ArenaParams:
     station_rad = 600
@@ -190,16 +191,22 @@ if __name__ == "__main__":
 
     write_to_pipe("{}\n".format(num_laps), p.stdin)
     write_to_pipe("{}\n".format(len(sel_track.stations)), p.stdin)
+    sx=[]
+    sy=[]
     for s in sel_track.stations:
         write_to_pipe("{} {}\n".format(s[0], s[1]), p.stdin)
+        sx.append(s[0])
+        sy.append(s[1])
 
     p01 = np.array(sel_track.stations[0]) - np.array(sel_track.stations[-1])
     init_ang = int(vec_angle(p01))
-    runner = Pod(sel_track.stations[-1], init_ang, sel_track.stations)
+    runner = Pod((4000, 4000), 0, sel_track.stations)
     follower = Pod((50, 0), 0, sel_track.stations)
     opp1 = Pod((0, 0), 0, sel_track.stations)
     opp2 = Pod((0, 0), 0, sel_track.stations)
     all_pods = [runner, follower, opp1, opp2]
+    x=[]
+    y=[]
     for _ in range(20):
         for pod in all_pods:
             pod.write(p.stdin)
@@ -208,6 +215,8 @@ if __name__ == "__main__":
         r = p.stdout.readline().decode()
         follower.read(r)
         runner.next()
+        x.append(runner.pos[0])
+        y.append(runner.pos[1])
         while True:
             try:
                 inp = p.stderr.readline().decode()
@@ -216,4 +225,9 @@ if __name__ == "__main__":
                 print ("DBG: {}".format(inp[:-1]))
             except:
                 break
+    fig, ax = plt.subplots()
+    ax.scatter(sx, sy,s=[600]*len(sx),alpha=0.5)
+    ax.scatter(x, y, s=[5]*len(x), alpha=1)
+    fig.tight_layout()
+    plt.show()
 
