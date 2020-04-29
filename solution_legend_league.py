@@ -687,7 +687,24 @@ class Pursuit:
 
     def act(self, pos, angle_abs, target):
         opp = opponent_leader
-        target, vel, angle = opp.predictor.predict(self.tracker.pod_params.pursuit_look_ahead_turns)
+        i = 0
+        while True:
+            print ("i={}".format(i), file=sys.stderr)
+            if i < self.tracker.pod_params.pursuit_look_ahead_turns:
+                target, vel, angle = opp.predictor.predict(self.tracker.pod_params.pursuit_look_ahead_turns - i)
+            else:
+                target, vel, angle = opp.pos[-1], opp.vel, opp.angle
+
+            p01 = np.array(target) - np.array(pos)
+            p02 = np.array(opponent_leader.pos[-1]) - np.array(pos)
+            #ang_rad = np.radians(angle_abs)
+            #pface = (math.cos(ang_rad), math.sin(ang_rad))
+            dang = math.fabs(angle_between(p01, p02))
+            if dang < 45:
+                break
+            i += 1
+            if i > self.tracker.pod_params.pursuit_look_ahead_turns:
+                break
         print ("PREDICTION={} mypos={} otherpos={}".format(target, self.tracker.pos[-1], opp.pos[-1]), file=sys.stderr)
         f = ForceBasedCollisionAvoidance(self.tracker)
         t = f.get_evading_force(Tracker.me[0], 3200)
