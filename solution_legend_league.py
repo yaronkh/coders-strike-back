@@ -7,6 +7,7 @@ from numpy import linalg
 from scipy.special import comb
 import copy
 import random
+import struct
 
 
 class PodParams:
@@ -14,6 +15,7 @@ class PodParams:
     rot_vel = 18
     fric_thruts_to_thrust_ratio = 0.85
     def __init__(self):
+        #self.planner                       = Genetic()
         self.planner                       = Planner3()
         self.side_punch_max_angle          = 30
         self.shell_punch_dist              = 0
@@ -327,6 +329,42 @@ class Simulator:
         new_angle = np.degrees(np.math.atan2(pface[1], pface[0]))
         if new_angle < 0:
             new_angle += 360
+        return (int(npos[0]), int(npos[1])), (int(new_vel[0]), int(new_vel[1])), int(new_angle)
+
+    def calc_next_rotation(self, pos, angle, target):
+        p12 = unit_vector(np.array(target) - np.array(pos))
+        angle = np.radians(angle)
+        pface = (math.cos(angle), math.sin(angle))
+        angle = angle_between(pface, (p12[0], p12[1]))
+        if math.fabs(angle) <= PodParams.rot_vel:
+            return  np.array((p12[0], p12[1]))
+        d =  PodParams.rot_vel if angle > 0 else -PodParams.rot_vel
+        r =rotate(np.array(pface), degrees=d)
+        return rotate(np.array(pface), degrees=d)
+
+class Simulator_:
+    def __init__(self):
+        pass
+
+    def calc_next_turn(self, target, pos, vel, angle, thrust, boost, shield):
+        #Rotation: the pod rotates to face the target point, with a maximum of 18 degrees (except for the 1rst round).
+        pface = self.calc_next_rotation(pos, angle, target)
+
+        #Acceleration: the pod's facing vector is multiplied by the given thrust value. The result is added to the current speed vector.
+        thrust_vec = pface * thrust
+        new_vel = (np.array(vel) + thrust_vec)#* ArenaParams.friction_fac
+
+        #Movement: The speed vector is added to the position of the pod. If a collision would occur at this point, the pods rebound off each other.
+        npos = np.array(pos) + new_vel
+
+        #Friction: the current speed vector of each pod is multiplied by 0.85
+        new_vel *= ArenaParams.friction_fac
+        new_vel = np.trunc(new_vel)
+
+        #The speed's values are truncated and the position's values are rounded to the nearest integer.
+        new_angle = np.degrees(np.math.atan2(pface[1], pface[0]))
+        if new_angle < 0:
+            new_angle += 360
         return (npos[0], npos[1]), (new_vel[0], new_vel[1]), new_angle
 
     def calc_next_rotation(self, pos, angle, target):
@@ -338,6 +376,262 @@ class Simulator:
             return  np.array((p12[0], p12[1]))
         d =  PodParams.rot_vel if angle > 0 else -PodParams.rot_vel
         return rotate(np.array(pface), degrees=d)
+
+#Genetic algoriths stuff starts here
+class Genetic:
+    NUM_OPT_COMMANDS = 6
+    NUM_BITS_PER_COMMAND = 8
+    CMD_RES_DIVIDER = (1 << NUM_BITS_PER_COMMAND)
+    SINGLE_CMD_BITS = NUM_OPT_COMMANDS * NUM_BITS_PER_COMMAND
+    THRUST_RESOLUTION = PodParams.max_thrust / (CMD_RES_DIVIDER - 1)
+    ANGLE_RES = 360 / (CMD_RES_DIVIDER - 1)
+    FlT = [False, True]
+    GENERATION_SIZE = 8
+
+    def __init__(self):
+        self.simulator = Simulator()
+        self.tracker = None
+        self.hit_dist = 0.
+
+    @staticmethod
+    def chromo_encode(thrust_cmds, angle_cmds):
+        res = [False] * Genetic.SINGLE_CMD_BITS * 2
+        for i in range(Genetic.NUM_OPT_COMMANDS):
+            t = int(np.around(thrust_cmds[i] / Genetic.THRUST_RESOLUTION))
+            ang = int(np.around(angle_cmds[i] / Genetic.ANGLE_RES))
+            for b in range(Genetic.NUM_BITS_PER_COMMAND):
+                offs = (i + 1) * Genetic.NUM_BITS_PER_COMMAND - b - 1
+                res[offs] = Genetic.FlT[t & 0x1]
+                res[Genetic.SINGLE_CMD_BITS + offs] = Genetic.FlT[ang & 0x1]
+                t = (t >> 1)
+                ang = (ang >> 1)
+            assert t == 0
+            assert ang == 0
+        return res
+
+    @staticmethod
+    def chromo_decode(chromo):
+        thrust_cmds = [False] * Genetic.NUM_OPT_COMMANDS
+        angle_cmds = thrust_cmds[:]
+        for i in range(Genetic.NUM_OPT_COMMANDS):
+            t = 0
+            ang = 0
+            for b in range(Genetic.NUM_BITS_PER_COMMAND):
+                t = (t << 1)
+                ang = (ang << 1)
+                offs = i * Genetic.NUM_BITS_PER_COMMAND + b
+                if chromo[offs]:
+                    t |= 1
+                if chromo[Genetic.SINGLE_CMD_BITS + offs]:
+                    ang |= 1
+            thrust_cmds[i] = int(np.around(t * Genetic.THRUST_RESOLUTION))
+            angle_cmds[i] = int(np.around(ang * Genetic.ANGLE_RES))
+        return thrust_cmds, angle_cmds
+
+    def simu(self, thurst_v, angle_v):
+        pos = []
+        n_pos = self.tracker.pos[-1]
+        n_vel = self.tracker.vel
+        n_angle = self.tracker.angle
+        for t, a in zip(thurst_v, angle_v):
+            a_rad = np.radians(a)
+            target = (math.cos(a_rad) * 30000, math.sin(a_rad) * 30000)
+            n_pos, n_vel, n_angle = self.simulator.calc_next_turn(target, n_pos, n_vel, n_angle, t, False, False)
+            pos.append(n_pos)
+        return pos
+
+    def target(self, chromo):
+        thrust, angle = Genetic.chromo_decode(chromo)
+        #print ("THRUST={},ANG={}".format(thrust, angle), file=sys.stderr)
+        pos_v = self.simu(thrust, angle)
+        grade0 = 0.
+        grade1 = 0.
+
+        for p in pos_v:
+            d = dist_pnts(p, self.tracker.stations[0])
+            if d <= self.hit_dist:
+                grade0 = 1.0
+        if grade0 > 0:
+            d = dist_pnts(pos_v[-1], self.tracker.stations[1])
+            if d <= self.hit_dist:
+                grade1 = 1.0
+            else:
+                grade1 = self.hit_dist / d
+        else:
+            d = dist_pnts(pos_v[-1], self.tracker.stations[0])
+            if d <= self.hit_dist:
+                grade0 = 1.0
+            else:
+                grade0 = self.hit_dist / d
+        return grade0 * 0.7 + grade1 * 0.3
+
+    def guess_initial_set(self, num_guesses):
+        res = []
+        tot_guesses = []
+        for _ in range(num_guesses):
+            thrust_v = np.random.randint(0, high=PodParams.max_thrust, size=Genetic.NUM_OPT_COMMANDS)
+            ang_v = np.random.randint(0, 360, size=Genetic.NUM_OPT_COMMANDS)
+            tot_guesses.append((thrust_v, ang_v))
+            res.append(Genetic.chromo_encode(thrust_v, ang_v))
+        #print ("Guesses={}".format(tot_guesses), file=sys.stderr)
+        return res
+
+    def fitness(self, data):
+        #for g in data:
+        #    t = self.target(g)
+        #    #print ("g={} fit={}".format(g, t), file=sys.stderr)
+        return [self.target(g) for g in data]
+
+    def natural_selection(self, FP):
+        s = 0
+        FPT = [0.0]
+        for p in FP:
+            FPT.append(p + s)
+            s += p
+        FPT.append(1.0)
+        Pr = sorted(np.random.uniform(0.0, 1.0, len(FP)))
+        iFP = 0
+        while len(Pr):
+            if (Pr[0] >= FPT[iFP] and Pr[0] < FPT[iFP + 1]):
+                yield(iFP)
+                Pr = Pr[1:]
+            else:
+                iFP += 1
+        return
+
+    @staticmethod
+    def breed(parent1, parent2):
+        child = []
+        childP1 = []
+        childP2 = []
+
+        geneA = int(random.random() * len(parent1))
+        geneB = int(random.random() * len(parent1))
+
+        startGene = min(geneA, geneB)
+        endGene = max(geneA, geneB)
+
+        return parent1[:startGene] + parent2[startGene:endGene] + parent1[endGene:]
+
+    @staticmethod
+    def breedPopulation(matingpool, eliteSize):
+        children = []
+        length = len(matingpool) - eliteSize
+        pool = random.sample(matingpool, len(matingpool))
+
+        for i in range(0,eliteSize):
+            children.append(matingpool[i])
+
+        for i in range(0, length):
+            child = Genetic.breed(pool[i], pool[len(matingpool)-i-1])
+            children.append(child)
+        return children
+
+    @staticmethod
+    def sort_parents(parents):
+        return sorted(parents, key=lambda x:x[1], reverse=True)
+
+    @staticmethod
+    def mutate(children, rate):
+        l = len(children[0])
+        n_children = len(children)
+        tot_num_genes = n_children * l
+        num_mutations = int(np.rint(rate * tot_num_genes))
+        num_indxs = np.random.randint(0, high=tot_num_genes - 1, size=num_mutations)
+        for i in num_indxs:
+            #print (i)
+            i_child = int(i / l)
+            i_gene = i % l
+            #print ("mutating {},{}".format(i_child, i_gene))
+            children[i_child][i_gene] = not children[i_child][i_gene]
+
+    def plan(self, pos, angle_abs, target, stations, tracker, params):
+        self.tracker = tracker
+        self.hit_dist = ArenaParams.station_rad - self.tracker.pod_params.pod_rad
+        self.seg = Planner3()
+        self.seg.plan(pos,angle_abs, target, stations, tracker, params)
+
+    def get_planner_init(self, pos, angle_abs, target):
+        thrust_cmds = []
+        ang_cmds = []
+        pos = self.tracker.pos[-1]
+        vel = self.tracker.vels[-1]
+        angle = self.tracker.angle
+
+        targs = []
+
+        for _ in range(Genetic.NUM_OPT_COMMANDS):
+            target, thrust, boost, shield = self.seg.act(pos, angle_abs, target)
+            targs.append(target)
+            p12 = np.array(target) - np.array(pos)
+            ang_rad = math.atan2(p12[1], p12[0])
+            ang_deg = np.degrees(ang_rad)
+            if ang_deg < 0:
+                ang_deg += 360
+            thrust_cmds.append(thrust)
+            ang_cmds.append(ang_deg)
+            pos, vel, angle = self.simulator.calc_next_turn(target, pos, vel, angle, thrust, boost, shield)
+            d = dist_pnts(pos, self.tracker.stations[0])
+            #print ("PD={}".format(d), file=sys.stderr)
+        #print ("REPLAY to see if we get the same distance", file=sys.stderr)
+
+        #pos = self.tracker.pos[-1]
+        #vel = self.tracker.vels[-1]
+        #angle = self.tracker.angle
+        #for targ, t, a in zip(targs, thrust_cmds, ang_cmds):
+        #    p12 = np.array(targ) - np.array(pos)
+        #    ang_targ = np.degrees(np.math.atan2(p12[1], p12[0]))
+        #    targ = (0.1 * targ[0], 0.1 * targ[1])
+        #    print ("ang_targ={} a={}".format(ang_targ, a), file=sys.stderr)
+        #    pos, vel, angle = self.simulator.calc_next_turn(targ, pos, vel, angle, t, False, False)
+        #ppp = self.simu(thrust_cmds, ang_cmds)
+        #d = dist_pnts(ppp[-1], self.tracker.stations[0])
+        ##d = dist_pnts(pos, self.tracker.stations[0])
+        #print ("after2 replay the distance is {}".format(d), file=sys.stderr)
+        return Genetic.chromo_encode(thrust_cmds, ang_cmds)
+
+
+    def act(self, pos,  angle_abs, target):
+        start = time.time()
+        planner_chromo = self.get_planner_init(pos, angle_abs, target)
+        crms = self.guess_initial_set(Genetic.GENERATION_SIZE)
+        crms = [planner_chromo] + crms
+        #sys.exit(255)
+        #print ("fit={}".format(gg, file=sys.stderr))
+
+        best_sol = []
+        best_fit = 0.
+        while (time.time() - start) < 0.06:
+            fit = self.fitness(crms)
+
+            for f, c in zip(fit, crms):
+                if f > best_fit:
+                    best_fit = f
+                    best_sol = c[:]
+            tot = sum(fit)
+            FP = [ g / tot for g in fit]
+            #print ("FP={}".format(FP), file=sys.stderr)
+            #print (FP)
+            ns = list(self.natural_selection(FP))
+            #print ("ns={}".format(ns), file=sys.stderr)
+            parents = [(crms[i], fit[i]) for i in ns]
+            #print (parents)
+            parents = Genetic.sort_parents(parents)
+            par_chromo = [p[0] for p in parents]
+            eliteSize = 2
+            crms = Genetic.breedPopulation(par_chromo, eliteSize)
+            Genetic.mutate(crms, 0.001)
+        #print("best_fit={}".format(best_fit), file=sys.stderr)
+        t_v, a_v = Genetic.chromo_decode(best_sol)
+        thrust = t_v[0]
+        ang = a_v[0]
+        ang_r = np.radians(ang)
+        n_target = (math.cos(ang_r) * 30000, math.sin(ang_r) * 30000)
+        end = time.time()
+        print ("time passed={}".format(end - start), file=sys.stderr)
+        return n_target, thrust, False, False
+
+#Genetic algoriths stuff ends here
 
 class Planner3:
     def __init__(self):

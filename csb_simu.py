@@ -8,6 +8,8 @@ import subprocess
 import numpy as np
 from numpy import linalg
 import matplotlib.pyplot as plt
+from matplotlib import animation
+import solution_legend_league as legend
 
 class ArenaParams:
     station_rad = 600
@@ -80,7 +82,7 @@ class Pod:
         self.boosted   = False
         self.sh_turns  = 0
         self.cp_id     = 0
-        self.simulator = Simulator()
+        self.simulator = legend.Simulator()
 
     def write(self, pipe):
         next_cp = (self.cp_id + 1)% len(self.stations)
@@ -109,7 +111,7 @@ class Pod:
        ret = self.simulator.calc_next_turn(self.target, self.pos, self.vel, self.angle, self.thrust, self.boost, self.shield)
        self.pos, self.vel, self.angle = ret
        d = dist_pnts(self.pos, self.stations[(self.cp_id + 1) % len(self.stations)])
-       print ("d={}".format(d))
+       #print ("d={}".format(d))
        if d <= (ArenaParams.station_rad - PodParams.pod_rad):
            self.cp_id += 1
 
@@ -150,92 +152,64 @@ tracks = {
 
 TRACKS = {}
 
-class Simulator:
-    def __init__(self):
-        pass
-
-    def calc_next_turn(self, target, pos, vel, angle, thrust, boost, shield):
-        #Rotation: the pod rotates to face the target point, with a maximum of 18 degrees (except for the 1rst round).
-        pface = self.calc_next_rotation(pos, angle, target)
-
-        #Acceleration: the pod's facing vector is multiplied by the given thrust value. The result is added to the current speed vector.
-        thrust_vec = pface * thrust
-        new_vel = (np.array(vel) + thrust_vec)#* ArenaParams.friction_fac
-
-        #Movement: The speed vector is added to the position of the pod. If a collision would occur at this point, the pods rebound off each other.
-        npos = np.array(pos) + new_vel
-
-        #Friction: the current speed vector of each pod is multiplied by 0.85
-        new_vel *= ArenaParams.friction_fac
-        new_vel = np.trunc(new_vel)
-
-        #The speed's values are truncated and the position's values are rounded to the nearest integer.
-        new_angle = np.degrees(np.math.atan2(pface[1], pface[0]))
-        if new_angle < 0:
-            new_angle += 360
-        return (int(npos[0]), int(npos[1])), (int(new_vel[0]), int(new_vel[1])), int(new_angle)
-
-    def calc_next_rotation(self, pos, angle, target):
-        p12 = unit_vector(np.array(target) - np.array(pos))
-        angle = np.radians(angle)
-        pface = (math.cos(angle), math.sin(angle))
-        angle = angle_between(pface, (p12[0], p12[1]))
-        if math.fabs(angle) <= PodParams.rot_vel:
-            return  np.array((p12[0], p12[1]))
-        d =  PodParams.rot_vel if angle > 0 else -PodParams.rot_vel
-        r =rotate(np.array(pface), degrees=d)
-        return rotate(np.array(pface), degrees=d)
+def p_err(p):
+    while True:
+        try:
+            inp = p.stderr.readline().decode()
+            if inp == '':
+                break
+            print ("DBG: {}".format(inp[:-1]))
+        except:
+            break
 
 if __name__ == "__main__":
-    os.environ["PYTHONUNBUFFERED"] = "1"
-    for t in tracks:
-        TRACKS[t.name] = t
-    sel_track = TRACKS["pyramid"]
-    num_laps = 1
-    code = sys.argv[1]
-    p = subprocess.Popen([code],stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        os.environ["PYTHONUNBUFFERED"] = "1"
+        for t in tracks:
+            TRACKS[t.name] = t
+        sel_track = TRACKS["triangle"]
+        num_laps = 1
+        code = sys.argv[1]
+        p = subprocess.Popen([code],stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-    #don't block on subprocess stderr
-    fd = p.stderr.fileno()
-    fl = fcntl.fcntl(fd, fcntl.F_GETFL)
-    fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+        #don't block on subprocess stderr
+        fd = p.stderr.fileno()
+        fl = fcntl.fcntl(fd, fcntl.F_GETFL)
+        fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
 
-    write_to_pipe("{}\n".format(num_laps), p.stdin)
-    write_to_pipe("{}\n".format(len(sel_track.stations)), p.stdin)
-    sx=[]
-    sy=[]
-    for s in sel_track.stations:
-        write_to_pipe("{} {}\n".format(s[0], s[1]), p.stdin)
-        sx.append(s[0])
-        sy.append(s[1])
+        write_to_pipe("{}\n".format(num_laps), p.stdin)
+        write_to_pipe("{}\n".format(len(sel_track.stations)), p.stdin)
+        sx=[]
+        sy=[]
+        for s in sel_track.stations:
+            write_to_pipe("{} {}\n".format(s[0], s[1]), p.stdin)
+            sx.append(s[0])
+            sy.append(s[1])
 
-    p01 = np.array(sel_track.stations[0]) - np.array(sel_track.stations[-1])
-    init_ang = int(vec_angle(p01))
-    runner = Pod((4000, 4000), 0, sel_track.stations)
-    follower = Pod((50, 0), 0, sel_track.stations)
-    opp1 = Pod((0, 0), 0, sel_track.stations)
-    opp2 = Pod((0, 0), 0, sel_track.stations)
-    all_pods = [runner, follower, opp1, opp2]
-    x=[]
-    y=[]
-    for _ in range(320):
-        for pod in all_pods:
-            pod.write(p.stdin)
-        r = p.stdout.readline().decode()
-        runner.read(r)
-        r = p.stdout.readline().decode()
-        follower.read(r)
-        runner.next()
-        x.append(runner.pos[0])
-        y.append(runner.pos[1])
-        while True:
-            try:
-                inp = p.stderr.readline().decode()
-                if inp == '':
-                    break
-                #print ("DBG: {}".format(inp[:-1]))
-            except:
-                break
+        p01 = np.array(sel_track.stations[0]) - np.array(sel_track.stations[-1])
+        init_ang = int(vec_angle(p01))
+        runner = Pod(sel_track.stations[-1], init_ang, sel_track.stations)
+        follower = Pod((50, 0), 0, sel_track.stations)
+        opp1 = Pod((0, 0), 0, sel_track.stations)
+        opp2 = Pod((0, 0), 0, sel_track.stations)
+        all_pods = [runner, follower, opp1, opp2]
+        x=[]
+        y=[]
+        p_err(p)
+        for _ in range(160):
+            for pod in all_pods:
+                pod.write(p.stdin)
+            r = p.stdout.readline().decode()
+            runner.read(r)
+            r = p.stdout.readline().decode()
+            follower.read(r)
+            runner.next()
+            x.append(runner.pos[0])
+            y.append(runner.pos[1])
+            p_err(p)
+    except:
+        p_err(p)
+        sys.exit(255)
     fig, ax = plt.subplots()
     ax.scatter(sx, sy,s=[1200]*len(sx),alpha=0.5)
     ax.scatter(x, y, s=[50]*len(x), alpha=1)
