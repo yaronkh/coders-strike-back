@@ -980,7 +980,7 @@ class Tracker:
     me = None
     other = None
 
-    def __init__(self, num_laps, me):
+    def __init__(self, num_laps, me, id=-9999):
         self.num_laps           = 0
         self.arena_params       = None
         self.pod_params         = None
@@ -1001,6 +1001,7 @@ class Tracker:
         self.boost_turns        = 0
         self.predictor          = MotionPredictor(self)
         self.predictions        = []
+        self.id = id
 
     def thrust_vec(self, thrust, target):
         return unit_vector(np.array(target) - np.array(self.pos[-1])) * thrust
@@ -1205,8 +1206,8 @@ class Tracker:
         return ppos
 
 class Defender(Tracker):
-    def __init__(self, num_laps, me):
-        Tracker.__init__(self, num_laps, me)
+    def __init__(self, num_laps, me, id=-9999):
+        Tracker.__init__(self, num_laps, me, id)
         self.algo               = GuardPostStrategy(num_laps)
         self.pursuit            = False
         self.pusuit_has_planned = False
@@ -1421,10 +1422,10 @@ all_second        = None
 
 if __name__ == "__main__":
     num_laps = int(input())
-    Tracker.me = Tracker(num_laps, me=True), Defender(num_laps, me=True)
-    Tracker.other = Tracker(num_laps, me=False), Tracker(num_laps, me=False)
+    Tracker.me = [Tracker(num_laps, me=True, id=0), Tracker(num_laps, me=True, id=1)]
+    Tracker.other = [Tracker(num_laps, me=False), Tracker(num_laps, me=False)]
     Tracker.me[0].pod_params = offence_params
-    Tracker.me[1].pod_params = defence_params
+    Tracker.me[1].pod_params = offence_params#defence_params
     Tracker.other[0].pod_params = OpponentPodParams()
     Tracker.other[1].pod_params = OpponentPodParams()
 
@@ -1436,12 +1437,14 @@ if __name__ == "__main__":
         stations.append((int(xs), int(ys)))
 
     arena_detector.try_detect(stations)
-    all_trackers = (Tracker.me[0], Tracker.me[1], Tracker.other[0], Tracker.other[1])
+    all_trackers = [Tracker.me[0], Tracker.me[1], Tracker.other[0], Tracker.other[1]]
 
     Tracker.me[0].configure(arena_detector, num_laps)
     Tracker.me[1].configure(arena_detector, num_laps)
 
     # game loop
+    i = 0
+    assigned = False
     while True:
         for tracker in all_trackers:
             s = input()
@@ -1449,10 +1452,26 @@ if __name__ == "__main__":
             x, y, vx, vy, angle, next_cp = [int(i) for i in s.split()]
             tracker.report_pos((x, y), (vx, vy), angle, next_cp)
 
+        my_leader, my_follower = Tracker.leader(Tracker.me[0], Tracker.me[1])
         opponent_leader, opponent_follower = Tracker.leader(Tracker.other[0], Tracker.other[1])
-        all_leader, all_second = Tracker.leader(Tracker.me[0], opponent_leader)
+        all_leader, all_second = Tracker.leader(my_leader, opponent_leader)
 
         print ("OFFENCE DATA", file=sys.stderr)
         Tracker.me[0].act()
         print ("DEFENCE DATA", file=sys.stderr)
         Tracker.me[1].act()
+        if assigned == False and i >= 20 or (my_leader.passed_stations - my_follower.passed_stations) > 1:
+            assigned = True
+            id = my_follower.id
+            Tracker.me[id] = Defender(num_laps, me=True, id=id)
+            Tracker.me[id].passed_stations = my_follower.passed_stations
+            Tracker.me[id].pod_params = defence_params
+            Tracker.me[id].configure(arena_detector, num_laps)
+            Tracker.me[id].stations = my_follower.stations[:]
+            Tracker.me[id].pos = my_follower.pos[:]
+            Tracker.me[id].vels = my_follower.vels[:]
+            Tracker.me[id].angles = my_follower.angles[:]
+            all_trackers[id] = Tracker.me[id]
+            my_follower = Tracker.me[id]
+        i += 1
+
