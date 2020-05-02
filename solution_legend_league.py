@@ -601,7 +601,7 @@ class Genetic:
 
         best_sol = []
         best_fit = 0.
-        while (time.time() - start) < 0.06:
+        while (time.time() - start) < 0.04:
             fit = self.fitness(crms)
 
             for f, c in zip(fit, crms):
@@ -630,6 +630,52 @@ class Genetic:
         end = time.time()
         print ("time passed={}".format(end - start), file=sys.stderr)
         return n_target, thrust, False, False
+
+class DefenceGenetic(Genetic):
+
+    def __init__(self):
+        self.opponent = None
+        Genetic.__init__(self)
+
+    def set_opponent(self, opp):
+        self.opp = opp
+
+    def plan(self, pos, angle_abs, target, stations, tracker, params):
+        self.tracker = tracker
+        self.seg = Planner3()
+        self.seg.plan(pos, angle_abs, target, stations, tracker, params)
+
+    def dist_to_opp(self, pos, i):
+        f = ForceBasedCollisionAvoidance(self.opp)
+        itw, _ = f.in_the_way(self.tracker)
+        if not itw:
+            return 9999999
+        opp_pos = self.opp.pos[-1 - Genetic.NUM_OPT_COMMANDS + i]
+        dist_opp = dist_pnts(opp_pos, self.opp.stations[0])
+        dist = dist_pnts(pos, self.opp.stations[0])
+        if dist < dist_opp:
+            return dist
+        else:
+            return 9999999
+
+
+    def target(self, chromo):
+        thrust, angle = Genetic.chromo_decode(chromo)
+        pos = self.tracker.pos[-1]
+        pod_angle = self.tracker.angle
+        vel = self.tracker.vels[-1]
+        min_dist = 9999999
+
+        for i, (t, a) in enumerate(zip(thrust, angle)):
+            dist = self.dist_to_opp(pos, i)
+            if dist <= 500:
+                return 1.0
+            if dist < min_dist:
+                min_dist = dist
+            ang_rad = np.radians(a)
+            targ = (30000 * math.cos(ang_rad), 30000 * math.sin(ang_rad))
+            pos, vel, pod_angle = self.simulator.calc_next_turn(targ, pos, vel, pod_angle, t, False, False)
+        return 500.0/min_dist
 
 #Genetic algoriths stuff ends here
 
@@ -675,8 +721,7 @@ class Pursuit:
         self.tracker = tracker
         self.algo = BlindPlanner()
 
-    def plan(self, pos, angle, target, stations, tracker, params
-            ):
+    def plan(self, pos, angle, target, stations, tracker, params):
         """
         stations - the list of stations, the post to defend is the first station
         """
@@ -686,6 +731,33 @@ class Pursuit:
         self.tolerance      = ArenaParams.station_rad - self.tracker.pod_params.pod_rad
 
     def act(self, pos, angle_abs, target):
+        opp_org = opponent_leader
+        pl = Planner3()
+        genetic = DefenceGenetic()
+        sim = Simulator()
+        opp = copy.deepcopy(opp_org)
+        print ("opp={},opp_org={},o_params={},nparams{}".format(opp, opp_org, opp_org.arena_params, opp.arena_params),
+                file=sys.stderr)
+        pos0 = opp.pos[-1]
+        pl.plan(opp.pos[-1], opp.angles[-1], opp.stations[-1], opp.stations, opp, Tracker.me[0].arena_params)
+        for _ in range(Genetic.NUM_OPT_COMMANDS):
+            (target, thrust, shield, boost) = pl.act(opp.pos[-1], opp.angles[-1], opp.stations[0])
+            pos, vel, angle = sim.calc_next_turn(target, opp.pos[-1], opp.vels[-1], opp.angles[-1], thrust, boost, shield)
+            opp.report_pos(pos, vel, angle, opp.prev_cp)
+
+        genetic.set_opponent(opp)
+
+        genetic.plan(self.tracker.pos[-1],
+                self.tracker.angles[-1],
+                self.tracker.stations[0],
+                self.tracker.stations,
+                self.tracker,
+                self.tracker.arena_params)
+
+        res = genetic.act(self.tracker.pos[-1], self.tracker.angles[-1], pos0)
+        return res
+
+    def act_(self, pos, angle_abs, target):
         opp = opponent_leader
         i = 0
         while True:
@@ -695,7 +767,7 @@ class Pursuit:
             else:
                 target, vel, angle = opp.pos[-1], opp.vel, opp.angle
 
-            p01 = np.array(target) - np.array(pos)
+            p01 = np.array(opponent_leader.stations[0]) - np.array(pos)
             p02 = np.array(opponent_leader.pos[-1]) - np.array(pos)
             #ang_rad = np.radians(angle_abs)
             #pface = (math.cos(ang_rad), math.sin(ang_rad))
@@ -749,14 +821,14 @@ class GuardPostStrategy:
         f = ForceBasedCollisionAvoidance(opponent_leader)
         in_way, fac = f.in_the_way(self.tracker)
         is_in_yeshoret = self.tracker.is_in_yeshoret(opponent_leader)
-        print ("pusu={},is_way={},yesho={}".format(self.pursuing, in_way, is_in_yeshoret), file=sys.stderr)
+        print ("pusu={},is_way={},yesho={}, fac={}".format(self.pursuing, in_way, is_in_yeshoret, fac), file=sys.stderr)
         face = self.tracker.face_firection()
         p_rel = np.array(opponent_leader.pos[-1]) - np.array(self.tracker.pos[-1])
         f_alfa = angle_between(face, p_rel)
         if not self.tracker.is_in_yeshoret(opponent_leader) or f_alfa > 15:
             in_way = False
 
-        if (d < 4000 and fac >= 1) or in_way or self.pursuing:
+        if (d < 2000 and fac >= 1) or in_way or self.pursuing:
             self.pursuing = True
             return self.pursuit.act(pos, angle_abs, target)
         else:
@@ -966,9 +1038,9 @@ class ForceBasedCollisionAvoidance:
         p_other = np.array(other.pos[-1]) - np.array(self.tracker.pos[-1])
         res = math.fabs(angle_between(p_t, p_other))
         f = location_along_segment(self.tracker.pos[-1], self.tracker.stations[0], other.pos[-1])
-        print ("F={}, al={}".format(f, res), file=sys.stderr)
+        #print ("F={}, al={}".format(f, res), file=sys.stderr)
         if f <= 1 and f > 0:
-            return (res < 15), f
+            return (res < 3), f
         return False, f
 
     def get_evading_force(self, other, rad):
@@ -1277,15 +1349,16 @@ class Defender(Tracker):
                 self.algo.plan(self.pos[-1], self.angle, self.stations[0], self.stations, self, self.arena_params)
                 self.pusuit_has_planned = True
             target = opponent_leader.stations[0]
-            shield = self.need_protection()
+            shield = False #self.need_protection()
             #print ("defender shield={}".format(shield), file=sys.stderr)
 
-            if self.time_left_to_punch > 0:
-                self.time_left_to_punch -= 1
-            elif not shield and self.attempt_punch():
-                return
+            #if self.time_left_to_punch > 0:
+            #    self.time_left_to_punch -= 1
+            #elif not shield and self.attempt_punch():
+            #    return
 
             tc, thrust, boost, shield2 = self.algo.act(self.pos[-1], self.angle, target)
+            print ("shield3={}".format(shield2, file=sys.stderr))
             shield |= shield2
             self.write(tc, thrust, boost, shield)
         else:
@@ -1297,20 +1370,21 @@ class Defender(Tracker):
     def act_guard(self):
         leader = opponent_leader
         #print ("CAN_REACH_LEADER={}".format(self.can_reach_target_before_leader(leader)), file=sys.stderr)
-        jump = 0
-        while not self.can_reach_target_before_leader(leader):
-            self.leader_origin = leader.stations[jump - 1]
-            p23 = np.array(self.leader_origin) - np.array(leader.stations[jump])
-            self.leader_target = leader.stations[jump]
-            #print ("SETTING TARGET TO {}".format(self.leader_target), file=sys.stderr)
-            jn = (jump + 1) % len(leader.stations)
-            self.leader_next = leader.stations[jn]
-            p23 = p23 * 0.2
-            target = leader.stations[1] + p23
-            self.station_id = leader.passed_stations + jump + 1
-            self.stations = leader.stations[jn:] +leader.stations[: jn]
-            self.algo.plan(self.pos[-1], self.angle, target, self.stations, self, self.arena_params)
-            jump += 1
+        if opponent_leader.prev_cp != opponent_leader.next_cp:
+            jump = 0
+            while not self.can_reach_target_before_leader(leader):
+                self.leader_origin = leader.stations[jump - 1]
+                p23 = np.array(self.leader_origin) - np.array(leader.stations[jump])
+                self.leader_target = leader.stations[jump]
+                #print ("SETTING TARGET TO {}".format(self.leader_target), file=sys.stderr)
+                jn = (jump + 1) % len(leader.stations)
+                self.leader_next = leader.stations[jn]
+                p23 = p23 * 0.2
+                target = leader.stations[1] + p23
+                self.station_id = leader.passed_stations + jump + 1
+                self.stations = leader.stations[jn:] +leader.stations[: jn]
+                self.algo.plan(self.pos[-1], self.angle, target, self.stations, self, self.arena_params)
+                jump += 1
         #print ("CAN_REACH_LEADER={}".format(self.can_reach_target_before_leader(leader)), file=sys.stderr)
 
         if self.is_self_blocking(leader):
@@ -1318,8 +1392,9 @@ class Defender(Tracker):
         else:
             target = self.calc_target_full_block(leader)
 
+        #shield = False
         shield = self.need_protection()
-        #print ("defender shield={}".format(shield), file=sys.stderr)
+        ##print ("defender shield={}".format(shield), file=sys.stderr)
 
         if self.time_left_to_punch > 0:
             self.time_left_to_punch -= 1
