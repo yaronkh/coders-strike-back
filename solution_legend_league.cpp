@@ -9,15 +9,111 @@
 
 using namespace std;
 
-struct icord {
-   int x;
-   int y;
+#define PI 3.14159265
+
+float radians(float ang) {
+   return ang * PI / 180.;
+}
+
+float degrees(float rad) {
+   return rad * 180.0 / PI;
+}
+
+
+template <typename T=int>
+T clip(T val, T v1, T v2) {
+      if (val < v1)
+         val = v1;
+      else if(val > v2)
+         val = v2;
+      return val;
+}
+
+template <typename T>
+struct Coord {
+   T x;
+   T y;
+
+   Coord operator - (const Coord &c1) {
+      return {x - c1.x, y - c1.y};
+   }
+
+   float norm(void) const {
+      return sqrt(x*x + y*y);
+   }
+
+   T norm2(void) const {
+      return x*x + y*y;
+   }
+
+   int ang(void) {
+      return atan2(y, x) * 180./PI;
+   }
+
+   static T det(const Coord &c1, const Coord &c2) {
+      return c1.x * c2.y - c1.y * c2.x;
+   }
+
+   static T dot(const Coord &c1, const Coord &c2) {
+      return c1.x * c2.x + c1.y * c2.y;
+   }
+
+   Coord operator / (T t) {
+      return {x / t, y / t};
+   }
+
+   Coord operator * (T t) {
+      return {x * t, y * t};
+   }
+
+   T cross(const Coord &c) {
+      return x * c.y - y * c.x;
+   }
+
+   Coord unit_vec(void) {
+      return (*this)/norm();
+   }
+
+   float angle_between(const Coord &v2) {
+      auto v1_u = unit_vec();
+      auto v2_u = v2.unit_vector();
+      auto c = clip(dot(*this, v2), -1, 1);
+      auto ret = degrees(arccos(c));
+      auto cr = v1_u.cross(v2_u);
+      return (cr >= 0) ? ret : -ret;
+   }
+};
+template <typename T=int>
+float relAngle(const Coord<T> &p1, const Coord<T> &p2) {
+   return atan2(Coord<T>::det(p1, p2), Coord<T>::dot(p1, p2));
+}
+
+template <typename T = int>
+struct Line {
+   Coord<T> p1;
+   Coord<T> p2;
+
+   T point_to_line_dist(Coord<T> p) {
+      T x1 = p1.x;
+      T y1 = p1.y;
+      T x2 = p2.x;
+      T y2 = p2.y;
+      T x0 = p.x;
+      T y0 = p.y;
+      return -((y2 - y1)*x0 - (x2 - x1) *y0 +x2*y1 - y2*x1)/sqrt((y2 - y1)*(y2 - y1) + (x2 - x1)*(x2 - x1));
+   }
+
 };
 
-typedef icord ivec;
+typedef Coord<int> icoord;
+typedef Coord<float> FCoord;
+
+typedef icoord ivec;
 
 struct PodParams {};
-struct ArenaParams {};
+struct ArenaParams {
+
+};
 
 ArenaParams HostileParams() {
    return ArenaParams();
@@ -81,17 +177,17 @@ private:
 
 class Arena {
 public:
-    Arena(const string &name_, const list<icord> &cps, const ArenaParams &a_params) :
+    Arena(const string &name_, const list<icoord> &cps, const ArenaParams &a_params) :
         name(name_), stations(cps), params(a_params) {}
 
-    bool pointInTrack(const icord &p) const;
+    bool pointInTrack(const icoord &p) const;
 
     string name;
-    list <icord> stations;
+    list <icoord> stations;
     ArenaParams params;
 };
 
-bool Arena::pointInTrack(const icord &p) const
+bool Arena::pointInTrack(const icoord &p) const
 {
    for (auto &c: stations)
    {
@@ -105,11 +201,11 @@ class ArenaDetector{
 public:
     ArenaDetector(void);
 
-    const Arena *detect(const list<icord> &stations);
+    const Arena *detect(const list<icoord> &stations);
 
     list<Arena> tracks;
     const Arena *detected_track = nullptr;
-    list<icord> stations;
+    list<icoord> stations;
 };
 
 
@@ -130,7 +226,7 @@ ArenaDetector::ArenaDetector(void)
     tracks.push_back({"Zigzag",     {  { 10660, 2295 }, { 8695,  7469 },  { 7225,  2174 },                             { 3596,  5288 },                                        { 13862, 5092 }                           }, ZigzagParams()   });
 }
 
-const Arena * ArenaDetector::detect(const list<icord> &stations_)
+const Arena * ArenaDetector::detect(const list<icoord> &stations_)
 {
    int num_tracks = 0;
    stations = stations_;
@@ -183,20 +279,20 @@ private:
    int                     num_laps = 0;
    ArenaParams             arena_params;
    PodParams               pod_params;
-   list<icord>             pos;
+   list<icoord>             pos;
    list<int>               angles;
    list<ivec>              vels;
    list<int>               thrusts;
    int                     next_cp = 0;
    int                     prev_cp = 0;
-   list<icord>             stations;
+   list<icoord>             stations;
    int                     time_left_to_punch = 0;
    int                     passed_stations = -1;
    bool                    is_me = false;
    bool                    boost = false;
    int                     boost_turns = 0;
    shared_ptr<Predictor>   predictor;
-   list<icord>             predictions;
+   list<icoord>             predictions;
 };
 
 vector<unique_ptr<Runner> > Runner::me;
@@ -226,7 +322,7 @@ int main()
 
     int check_point_count;
     cin >> check_point_count; cin.ignore();
-    std::list<icord> stations;
+    std::list<icoord> stations;
     for (int i = 0; i < check_point_count; i++) {
         int xs;
         int ys;
