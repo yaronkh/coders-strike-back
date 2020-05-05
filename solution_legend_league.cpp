@@ -34,6 +34,11 @@ struct Coord {
    T x;
    T y;
 
+   friend ostream & operator << (ostream &out, const Coord &c) {
+      out << "(" << c.x << "," << c.y << ")";
+      return out;
+   }
+
    Coord operator - (const Coord &c1) {
       return {x - c1.x, y - c1.y};
    }
@@ -106,7 +111,33 @@ struct Line {
 };
 
 typedef Coord<int> icoord;
-typedef Coord<float> FCoord;
+typedef Coord<float> fcoord;
+
+void line_ABC(const fcoord &p1, const fcoord &p2, float &A, float &B, float &C)
+{
+   A = p2.y - p1.y;
+   B = p1.x - p2.x;
+   C = A * p1.x + B * p1.y;
+}
+
+fcoord line_intersect(const fcoord &p1, const fcoord &p2, const fcoord &q1, const fcoord &q2)
+{
+   float A1, B1, C1, A2, B2, C2;
+   line_ABC(p1, p2, A1, B1, C1);
+   line_ABC(q1, q2, A2, B2, C2);
+   float det = A1 * B2 - A2 * B1;
+   if (det == 0.0)
+      throw "attempt to find intersect of parallel lines";
+   return {(B2 * C1 - B1 * C2) / det, (A1 * C2 - A2 * C1) / det};
+}
+
+void test_line_intersect()
+{
+   fcoord p1 = {0., 5.0}, p2 = {5.0, 0.0};
+   fcoord q1 = {0.0, 0.0}, q2 = {5.0, 5.0};
+   cerr << "line intersect:" << p1 << p2 << " and " << q1 << q2 << endl;
+   cerr << "result:" << line_intersect(p1, p2, q1, q2) << endl;
+}
 
 typedef icoord ivec;
 
@@ -312,6 +343,7 @@ public:
 
 int main()
 {
+#ifndef TEST
     int num_laps;
     cin >> num_laps; cin.ignore();
     Runner::push_me(make_unique<Runner>(num_laps, true));
@@ -369,4 +401,8 @@ int main()
     }
 
     return 0;
+#else
+    test_line_intersect();
+    return 0;
+#endif
 }
