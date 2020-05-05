@@ -226,6 +226,14 @@ void test_circ_from_2points_and_rad()
    cout << "result: " << find_rad_from_two_points_and_tangent(p1, tang, p2) << endl;
 }
 
+void test_angle_between()
+{
+   dcoord v1 = {10.0, 0};
+   dcoord v2 = {0., 11};
+   cout << "angle v1 to v2 "<< v1.angle_between(v2) << endl;
+   cout << "angle v2 to v1 "<< v2.angle_between(v1) << endl;
+}
+
 double location_along_segment(const dcoord &p, const dcoord &q, const dcoord &x)
 {
    auto v = q - p;
@@ -510,6 +518,7 @@ int main()
     test_rotate();
     test_circ_from_2points_and_rad();
     test_location_along_segment();
+    test_angle_between();
 #endif
     return 0;
 }
