@@ -139,6 +139,29 @@ void test_line_intersect()
    cerr << "result:" << line_intersect(p1, p2, q1, q2) << endl;
 }
 
+fcoord rotate(const fcoord &v, float tet_degrees, const fcoord &o = {0, 0})
+{
+   auto vx = v.x - o.x;
+   auto vy = v.y - o.y;
+   auto teta = radians(tet_degrees);
+   auto costet = cos(teta);
+   auto sintet = sin(teta);
+   auto v10 = vx * costet;
+   auto v11 = vx * sintet;
+   auto v20 = vy * sintet;
+   auto v21 = vy * costet;
+   return {v10 - v20 + o.x, v11 + v21 + o.y};
+}
+
+void test_rotate()
+{
+   float teta = 36.8698;
+   fcoord B = {6., 0.};
+   fcoord A = {2., 3.};
+   fcoord C = rotate(B, teta, A);
+   cerr << "rotation of " << B << " around " << A << " gives " << C << endl;
+}
+
 typedef icoord ivec;
 
 struct PodParams {};
@@ -403,6 +426,7 @@ int main()
     return 0;
 #else
     test_line_intersect();
+    test_rotate();
     return 0;
 #endif
 }
