@@ -63,6 +63,10 @@ struct Coord {
       return c1.x * c2.x + c1.y * c2.y;
    }
 
+   T dot(const Coord &c) const {
+      return dot(*this, c);
+   }
+
    Coord operator / (T t) {
       return {x / t, y / t};
    }
@@ -208,6 +212,24 @@ void test_circ_from_2points_and_rad()
    fcoord p2 = {5.0, 5.0};
    cout << "circ from " << p1 << " tangent " << tang << " and " << p2 << endl;
    cout << "result: " << find_rad_from_two_points_and_tangent(p1, tang, p2) << endl;
+}
+
+float location_along_segment(const fcoord &p, const fcoord &q, const fcoord &x)
+{
+   auto v = q - p;
+   auto s = x - p;
+   return s.dot(v) / v.dot(v);
+}
+
+/*In [2]: s.location_along_segment((0.0, 0.0), (5.0, 5.0), (-1.0, 8.0))
+Out[2]: 0.7
+*/
+void test_location_along_segment()
+{
+   fcoord p = {0., 0.};
+   fcoord q = {5.0, 5.0};
+   fcoord x = {-1.0, 8.0};
+   cerr << "seg " << p << q << " point " << x << " loc along seg=" << location_along_segment(p,q,x) << endl;
 }
 
 typedef icoord ivec;
@@ -475,6 +497,7 @@ int main()
     test_line_intersect();
     test_rotate();
     test_circ_from_2points_and_rad();
+    test_location_along_segment();
 #endif
     return 0;
 }
