@@ -71,6 +71,14 @@ struct Coord {
       return {x * t, y * t};
    }
 
+   friend Coord operator + (const Coord &p1, const Coord &p2) {
+      return {p1.x + p2.x, p1.y + p2.y};
+   }
+
+   friend Coord operator - (const Coord &p1, const Coord &p2) {
+      return {p1.x - p2.x, p1.y - p2.y};
+   }
+
    T cross(const Coord &c) {
       return x * c.y - y * c.x;
    }
@@ -160,6 +168,46 @@ void test_rotate()
    fcoord A = {2., 3.};
    fcoord C = rotate(B, teta, A);
    cerr << "rotation of " << B << " around " << A << " gives " << C << endl;
+}
+
+struct fcirc {
+   fcoord c;
+   float rad;
+
+   friend ostream & operator << ( ostream &out, const fcirc &cr) {
+      out << "center: " << cr.c << "rad: " << cr.rad;
+      return out;
+   }
+};
+
+fcirc find_rad_from_two_points_and_tangent(const fcoord &p1, const fcoord &tang, const fcoord &p2)
+{
+    /*
+    p1 - point on the circle
+    tang - direction vector relative to p1
+    p2 - point on the circle
+   */
+   fcirc res;
+   auto pepend1 = rotate(tang, 90.0) + p1;
+   auto p3 = (p1 + p2) / 2.0;
+   auto pepend2 = rotate(p2, 90, p3);
+   res.c = line_intersect(p1, pepend1, p3, pepend2);
+   res.rad = (res.c - p1).norm();
+   return res;
+}
+
+/*
+ * In [3]: s.find_rad_from_two_points_and_tangent((0.0, 5.0), (1., 1.), (5.0, 0.0))
+Out[3]: (3.5355339059327378, (2.4999999999999996, 2.4999999999999996))
+
+ */
+void test_circ_from_2points_and_rad()
+{
+   fcoord p1 = {0.0, 5.0};
+   fcoord tang = {1., 1.};
+   fcoord p2 = {5.0, 5.0};
+   cout << "circ from " << p1 << " tangent " << tang << " and " << p2 << endl;
+   cout << "result: " << find_rad_from_two_points_and_tangent(p1, tang, p2) << endl;
 }
 
 typedef icoord ivec;
@@ -423,10 +471,10 @@ int main()
         cout << "8000 4500 100" << endl;
     }
 
-    return 0;
 #else
     test_line_intersect();
     test_rotate();
-    return 0;
+    test_circ_from_2points_and_rad();
 #endif
+    return 0;
 }
