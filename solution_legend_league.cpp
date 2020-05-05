@@ -11,11 +11,11 @@ using namespace std;
 
 #define PI 3.14159265
 
-float radians(float ang) {
+double radians(double ang) {
    return ang * PI / 180.;
 }
 
-float degrees(float rad) {
+double degrees(double rad) {
    return rad * 180.0 / PI;
 }
 
@@ -39,11 +39,11 @@ struct Coord {
       return out;
    }
 
-   Coord operator - (const Coord &c1) {
-      return {x - c1.x, y - c1.y};
+   friend Coord operator - (const Coord c0,const Coord &c1) {
+      return {c0.x - c1.x, c0.y - c1.y};
    }
 
-   float norm(void) const {
+   double norm(void) const {
       return sqrt(x*x + y*y);
    }
 
@@ -67,7 +67,7 @@ struct Coord {
       return dot(*this, c);
    }
 
-   Coord operator / (T t) {
+   Coord operator / (T t) const {
       return {x / t, y / t};
    }
 
@@ -79,30 +79,36 @@ struct Coord {
       return {p1.x + p2.x, p1.y + p2.y};
    }
 
-   friend Coord operator - (const Coord &p1, const Coord &p2) {
-      return {p1.x - p2.x, p1.y - p2.y};
-   }
-
    T cross(const Coord &c) {
       return x * c.y - y * c.x;
    }
 
-   Coord unit_vec(void) {
+   Coord unit_vec(void) const {
       return (*this)/norm();
    }
 
-   float angle_between(const Coord &v2) {
+   double angle_between(const Coord &v2) {
       auto v1_u = unit_vec();
-      auto v2_u = v2.unit_vector();
-      auto c = clip(dot(*this, v2), -1, 1);
-      auto ret = degrees(arccos(c));
+      auto v2_u = v2.unit_vec();
+      auto c = clip(dot(*this, v2), -1., 1.);
+      auto ret = degrees(acos(c));
       auto cr = v1_u.cross(v2_u);
       return (cr >= 0) ? ret : -ret;
    }
 };
+
+typedef Coord<int>   icoord;
+typedef Coord<double> dcoord;
+
 template <typename T=int>
-float relAngle(const Coord<T> &p1, const Coord<T> &p2) {
+double relAngle(const Coord<T> &p1, const Coord<T> &p2) {
    return atan2(Coord<T>::det(p1, p2), Coord<T>::dot(p1, p2));
+}
+
+dcoord unit_coord(double angle)
+{
+   auto ang_rad = radians(angle);
+   return {cos(ang_rad), sin(ang_rad)};
 }
 
 template <typename T = int>
@@ -122,22 +128,21 @@ struct Line {
 
 };
 
-typedef Coord<int> icoord;
-typedef Coord<float> fcoord;
+typedef Line<double>   fline;
 
-void line_ABC(const fcoord &p1, const fcoord &p2, float &A, float &B, float &C)
+void line_ABC(const dcoord &p1, const dcoord &p2, double &A, double &B, double &C)
 {
    A = p2.y - p1.y;
    B = p1.x - p2.x;
    C = A * p1.x + B * p1.y;
 }
 
-fcoord line_intersect(const fcoord &p1, const fcoord &p2, const fcoord &q1, const fcoord &q2)
+dcoord line_intersect(const dcoord &p1, const dcoord &p2, const dcoord &q1, const dcoord &q2)
 {
-   float A1, B1, C1, A2, B2, C2;
+   double A1, B1, C1, A2, B2, C2;
    line_ABC(p1, p2, A1, B1, C1);
    line_ABC(q1, q2, A2, B2, C2);
-   float det = A1 * B2 - A2 * B1;
+   double det = A1 * B2 - A2 * B1;
    if (det == 0.0)
       throw "attempt to find intersect of parallel lines";
    return {(B2 * C1 - B1 * C2) / det, (A1 * C2 - A2 * C1) / det};
@@ -145,13 +150,13 @@ fcoord line_intersect(const fcoord &p1, const fcoord &p2, const fcoord &q1, cons
 
 void test_line_intersect()
 {
-   fcoord p1 = {0., 5.0}, p2 = {5.0, 0.0};
-   fcoord q1 = {0.0, 0.0}, q2 = {5.0, 5.0};
+   dcoord p1 = {0., 5.0}, p2 = {5.0, 0.0};
+   dcoord q1 = {0.0, 0.0}, q2 = {5.0, 5.0};
    cerr << "line intersect:" << p1 << p2 << " and " << q1 << q2 << endl;
    cerr << "result:" << line_intersect(p1, p2, q1, q2) << endl;
 }
 
-fcoord rotate(const fcoord &v, float tet_degrees, const fcoord &o = {0, 0})
+dcoord rotate(const dcoord &v, double tet_degrees, const dcoord &o = {0, 0})
 {
    auto vx = v.x - o.x;
    auto vy = v.y - o.y;
@@ -167,16 +172,16 @@ fcoord rotate(const fcoord &v, float tet_degrees, const fcoord &o = {0, 0})
 
 void test_rotate()
 {
-   float teta = 36.8698;
-   fcoord B = {6., 0.};
-   fcoord A = {2., 3.};
-   fcoord C = rotate(B, teta, A);
+   double teta = 36.8698;
+   dcoord B = {6., 0.};
+   dcoord A = {2., 3.};
+   dcoord C = rotate(B, teta, A);
    cerr << "rotation of " << B << " around " << A << " gives " << C << endl;
 }
 
 struct fcirc {
-   fcoord c;
-   float rad;
+   dcoord c;
+   double rad;
 
    friend ostream & operator << ( ostream &out, const fcirc &cr) {
       out << "center: " << cr.c << "rad: " << cr.rad;
@@ -184,7 +189,7 @@ struct fcirc {
    }
 };
 
-fcirc find_rad_from_two_points_and_tangent(const fcoord &p1, const fcoord &tang, const fcoord &p2)
+fcirc find_rad_from_two_points_and_tangent(const dcoord &p1, const dcoord &tang, const dcoord &p2)
 {
     /*
     p1 - point on the circle
@@ -200,6 +205,13 @@ fcirc find_rad_from_two_points_and_tangent(const fcoord &p1, const fcoord &tang,
    return res;
 }
 
+double angleabs2angle(double angle_abs, const dcoord &target, const dcoord &pos)
+{
+   auto angle_uv = unit_coord(radians(angle_abs));
+   auto t = target - pos;
+   return angle_uv.angle_between(t);
+}
+
 /*
  * In [3]: s.find_rad_from_two_points_and_tangent((0.0, 5.0), (1., 1.), (5.0, 0.0))
 Out[3]: (3.5355339059327378, (2.4999999999999996, 2.4999999999999996))
@@ -207,14 +219,14 @@ Out[3]: (3.5355339059327378, (2.4999999999999996, 2.4999999999999996))
  */
 void test_circ_from_2points_and_rad()
 {
-   fcoord p1 = {0.0, 5.0};
-   fcoord tang = {1., 1.};
-   fcoord p2 = {5.0, 5.0};
+   dcoord p1 = {0.0, 5.0};
+   dcoord tang = {1., 1.};
+   dcoord p2 = {5.0, 5.0};
    cout << "circ from " << p1 << " tangent " << tang << " and " << p2 << endl;
    cout << "result: " << find_rad_from_two_points_and_tangent(p1, tang, p2) << endl;
 }
 
-float location_along_segment(const fcoord &p, const fcoord &q, const fcoord &x)
+double location_along_segment(const dcoord &p, const dcoord &q, const dcoord &x)
 {
    auto v = q - p;
    auto s = x - p;
@@ -226,9 +238,9 @@ Out[2]: 0.7
 */
 void test_location_along_segment()
 {
-   fcoord p = {0., 0.};
-   fcoord q = {5.0, 5.0};
-   fcoord x = {-1.0, 8.0};
+   dcoord p = {0., 0.};
+   dcoord q = {5.0, 5.0};
+   dcoord x = {-1.0, 8.0};
    cerr << "seg " << p << q << " point " << x << " loc along seg=" << location_along_segment(p,q,x) << endl;
 }
 
