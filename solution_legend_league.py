@@ -224,7 +224,6 @@ def location_along_segment(p, q, x):
     return alpha
 
 class PodKinematics:
-    braking_dist_t100 = 0
     series_converge_fac = 1.0 / (1.0 - ArenaParams.friction_fac)
 
     @staticmethod
@@ -234,8 +233,6 @@ class PodKinematics:
     @staticmethod
     def max_vel(thrust):
         return thrust * PodKinematics.series_converge_fac
-
-PodKinematics.braking_dist_t100 = PodKinematics.braking_dist(PodKinematics.max_vel(PodParams.max_thrust))
 
 class Simulator:
     def __init__(self):

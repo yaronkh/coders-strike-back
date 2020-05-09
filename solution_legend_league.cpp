@@ -351,6 +351,19 @@ ArenaParams ZigzagParams() {
 
 typedef tuple<icoord, int, bool, bool> instruction;
 
+class PodKinematics {
+public:
+    static constexpr double series_converge_fac = 1.0 / (1.0 - ArenaParams::friction_fac);
+
+    static double braking_dist(double tangent_vel) {
+       return tangent_vel * PodKinematics::series_converge_fac;
+    }
+
+    static double max_vel(int thrust) {
+       return PodKinematics::series_converge_fac * thrust;
+    }
+};
+
 class Runner;
 
 class Planner {
