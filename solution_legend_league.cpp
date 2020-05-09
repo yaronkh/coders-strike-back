@@ -1,3 +1,6 @@
+#include <cstdint>
+#include <stdlib.h>
+#include <time.h>
 #include <math.h>
 #include <iostream>
 #include <string>
@@ -8,8 +11,10 @@
 #include <utility>
 #include <tuple>
 #include <bits/stdc++.h>
+#include <chrono>
 
 using namespace std;
+using namespace std::chrono;
 
 #define PI 3.14159265
 
@@ -54,6 +59,10 @@ struct Coord {
 
    double dist_pnts(const Coord &c) {
       return (*this - c).norm();
+   }
+
+   double dist_pnts2(const Coord &c) {
+      return (*this - c).norm2();
    }
 
    T norm2(void) const {
@@ -292,6 +301,7 @@ struct PodParams {
    static constexpr int max_thrust = 200;
    static constexpr int rot_vel = 18;
    static constexpr double fric_thruts_to_thrust_ratio = 0.85;
+   static constexpr int pod_rad = 250;
 
    unique_ptr<Planner> planner = make_unique<Planner>();
 
@@ -392,19 +402,18 @@ public:
       return  rotate(pface, d);
    }
 
-   static PodPos calc_next_turn(const icoord &target, const icoord &pos, const icoord &vel,
-         int angle, int thrust, bool boost, bool shield)
+   static void calc_next_turn(const icoord &target, const icoord &pos, const icoord &vel,
+         int angle, int thrust, bool boost, bool shield, PodPos &res)
    {
       dcoord pface = calc_next_rotation(pos, angle, target);
       dcoord thrust_vec = pface * thrust;
       dcoord new_vel = to_dcoord(vel) + thrust_vec;
-      dcoord n_pos = to_dcoord(pos) + new_vel;
+      res.pos = to_icoord(to_dcoord(pos) + new_vel);
       new_vel *= ArenaParams::friction_fac;
-      icoord inew_vel = to_icoord(new_vel);
-      int new_angle = idegrees(atan2(pface.x, pface.y));
-      if (new_angle < 0)
-         new_angle += 360;
-      return {to_icoord(n_pos), inew_vel, new_angle};
+      res.vel = to_icoord(new_vel);
+      res.angle = idegrees(atan2(pface.x, pface.y));
+      if (res.angle < 0)
+         res.angle += 360;
    }
 };
 
@@ -434,11 +443,70 @@ public:
     Predictor(Runner *runner);
 
 private:
+};
 
+class Genetic: public Planner {
+public:
+   static constexpr int NUM_OPT_COMMANDS = 6;
+   static constexpr int NUM_BITS_PER_COMMAND = 8;
+   static constexpr int CMD_RES_DIVIDER = (1 << NUM_BITS_PER_COMMAND) - 1;
+   static constexpr int SINGLE_CMD_BITS = 2 * NUM_OPT_COMMANDS * NUM_BITS_PER_COMMAND;
+   static constexpr double THRUST_RESOLUTION = double(PodParams::max_thrust) / (CMD_RES_DIVIDER - 1);
+   static constexpr double ANGLE_RES = 360.0 / (CMD_RES_DIVIDER - 1);
+   static constexpr int GENERATION_SIZE = 8;
+
+   static constexpr int HIT_DIST = ArenaParams::station_rad - PodParams::pod_rad;
+   static constexpr int HIT_DIST2 = HIT_DIST * HIT_DIST;
+   static constexpr double MUTATION_RATE = 0.1;
+   static constexpr int MUTATION_BITS = MUTATION_RATE * SINGLE_CMD_BITS;
+
+   //chromozom typedef
+   typedef uint8_t chromo[NUM_OPT_COMMANDS * 2];
+
+   Runner *runner = nullptr;
+
+   //buffer to hold chromozomes
+   chromo buffer[GENERATION_SIZE];
+   chromo *current_generation = buffer;
+   chromo buffer2[GENERATION_SIZE];
+   chromo *new_generation = buffer2;
+   pair<int, double> fitness[GENERATION_SIZE];
+   int selection[GENERATION_SIZE];
+
+   //option to hold set of thrust and angle commands
+   int thrust_cmds[NUM_OPT_COMMANDS];
+   int angle_cmds[NUM_OPT_COMMANDS];
+
+   //holds the result of simulation
+   PodPos simu_res[NUM_OPT_COMMANDS];
+
+   void chromo_encode(int entry);
+   void chromo_decode(int entry);
+
+   //simulates the commands at thrust_cmds and angle_cmds
+   //results are stored in simu_res
+   void simu(void);
+
+   //Grade chromosome
+   double target(int entry);
+
+   void guess_initial_set(void);
+
+   void calc_fitness(void);
+
+   void natural_selection(void);
+
+   void breed(int parent1, int parent2, int entry);
+
+   void breed_population();
+
+   void mutate(void);
+
+   virtual instruction act(void);
 
 };
 
-class Runner;
+
 
 class GoToTargetRegulator: public Planner {
 public:
@@ -551,6 +619,165 @@ public:
    shared_ptr<Predictor>   predictor;
    list<icoord>            predictions;
 };
+
+void Genetic::chromo_encode(int entry)
+{
+   for (int i = 0; i < NUM_OPT_COMMANDS ; ++i) {
+      current_generation[entry][i << 1] = thrust_cmds[i] / THRUST_RESOLUTION;
+      current_generation[entry][(i << 1) | 0x1] = angle_cmds[i] / ANGLE_RES;
+   }
+}
+
+void Genetic::chromo_decode(int entry)
+{
+   for (int i = 0; i < NUM_OPT_COMMANDS ; ++i) {
+      thrust_cmds[i] = current_generation[entry][i << 1] * THRUST_RESOLUTION;
+      angle_cmds[i] = current_generation[entry][(i << 1) | 0x1] * ANGLE_RES;
+   }
+}
+
+void Genetic::simu(void)
+{
+   simu_res[0].pos = runner->cpos();
+   simu_res[0].vel = runner->cvel();
+   simu_res[0].angle = runner->cangle();
+
+   for (int i = 0; i < NUM_OPT_COMMANDS ; ++i) {
+      double a_rad = radians(angle_cmds[i]);
+      dcoord dtarget = {30000. * cos(a_rad), 30000. * sin(a_rad)};
+      icoord target = to_icoord(dtarget);
+      Simulator::calc_next_turn(target, simu_res[i].pos, simu_res[i].vel, simu_res[i].angle,
+            thrust_cmds[i], false, false, simu_res[i]);
+   }
+}
+
+double Genetic::target(int entry)
+{
+   chromo_decode(entry);
+   simu();
+   double grade0(0.), grade1(0.);
+   for (int i = 0; i < NUM_OPT_COMMANDS ; ++i) {
+      double d2 = simu_res[i].pos.dist_pnts2(runner->station(0));
+      if (d2 <= HIT_DIST2)
+         grade0 = 1.0;
+   }
+   if (grade0 > 0.) {
+      double d2 = simu_res[NUM_OPT_COMMANDS - 1].pos.dist_pnts2(runner->station(1));
+      if (d2 <= HIT_DIST2)
+         grade1 = 1.0;
+      else
+         grade1 = HIT_DIST2 / d2;
+   } else {
+      double d2 = simu_res[NUM_OPT_COMMANDS - 1].pos.dist_pnts2(runner->station(0));
+      if (d2 <= HIT_DIST2)
+         grade0 = 1.0;
+      else
+         grade0 = HIT_DIST2 / d2;
+   }
+   return 0.7 * grade0 + 0.3 * grade1;
+}
+
+void Genetic::guess_initial_set(void)
+{
+   srand (time(NULL));
+   for (int i=0; i<GENERATION_SIZE; ++i) {
+      for (int j=0; j<(2*NUM_OPT_COMMANDS); ++j)
+         current_generation[i][j] = (rand() & 0xFF);
+   }
+}
+
+
+void Genetic::calc_fitness(void)
+{
+   double tot = 0.;
+   for (int i=0; i < GENERATION_SIZE; ++i) {
+      double tar = target(i);
+      tot += tar;
+      fitness[i] = pair<int, double>(i, tar);
+   }
+   double tot2 = 0.;
+   for (int i=0; i < GENERATION_SIZE; ++i) {
+      double cur = fitness[i].second / tot;
+      fitness[i].second = cur + tot2;
+      tot2 += cur;
+   }
+   assert(tot2 == 1.0);
+}
+
+void Genetic::natural_selection(void)
+{
+   double Pr[GENERATION_SIZE];
+   for (int i=0; i<GENERATION_SIZE; ++i)
+      Pr[i] = (double)rand() / RAND_MAX;
+   sort(Pr, Pr+GENERATION_SIZE);
+   double lfp = 0.0;
+   int i = 0, ifitt = 0;
+   while (i < GENERATION_SIZE) {
+      if (Pr[i] >= lfp && Pr[i] <= fitness[ifitt].second) {
+         selection[i] = ifitt;
+         memcpy(&new_generation[i], &current_generation[ifitt], sizeof(buffer[0]));
+         ++i;
+      } else {
+         lfp = fitness[ifitt].second;
+         ++ifitt;
+      }
+   }
+   auto tmp = current_generation;
+   current_generation = new_generation;
+   new_generation = tmp;
+}
+
+void Genetic::breed(int parent1, int parent2, int entry)
+{
+   int geneA = rand() % (2 * NUM_OPT_COMMANDS);
+   int geneB = rand() % (2 * NUM_OPT_COMMANDS - geneA) + geneA;
+   for (int i = 0; i < geneA; ++i)
+      new_generation[entry][i] = current_generation[parent1][i];
+   for (int i = geneA; i < geneB; ++i)
+      new_generation[entry][i] = current_generation[parent2][i];
+   for (int i = geneB; i < NUM_OPT_COMMANDS; ++i)
+      new_generation[entry][i] = current_generation[parent1][i];
+}
+
+
+void Genetic::breed_population()
+{
+   for (int i=0; i < GENERATION_SIZE; ++i)
+   {
+      int parent1 = rand() % GENERATION_SIZE;
+      int parent2 = rand() % GENERATION_SIZE;
+      breed(parent1, parent2, i);
+   }
+}
+
+void Genetic::mutate(void)
+{
+   uint8_t *generation = (uint8_t *)new_generation;
+   for (int i = 0; i < MUTATION_BITS; ++i) {
+      int bit = rand() % (NUM_BITS_PER_COMMAND * GENERATION_SIZE);
+      generation[bit >> 3] ^= (0x1 << (bit & 0x7));
+   }
+}
+
+instruction Genetic::act(void)
+{
+   high_resolution_clock::time_point t1 = high_resolution_clock::now();
+   guess_initial_set();
+   high_resolution_clock::time_point t2 = high_resolution_clock::now();
+   duration<double, std::milli> time_span = t2 - t1;
+   do {
+      calc_fitness();
+      natural_selection();
+      breed_population();
+      mutate();
+      auto tmp = current_generation;
+      current_generation = new_generation;
+      new_generation = tmp;
+      t2 = high_resolution_clock::now();
+      time_span = t2 - t1;
+   } while (time_span < milliseconds(35));
+#error recalc fitness and return the best command
+}
 
 instruction GoToTargetRegulator::reduce(const dcoord &target, int thrust)
 {
