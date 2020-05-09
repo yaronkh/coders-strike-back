@@ -7,6 +7,7 @@
 #include <memory>
 #include <utility>
 #include <tuple>
+#include <bits/stdc++.h>
 
 using namespace std;
 
@@ -45,6 +46,10 @@ struct Coord {
 
    double norm(void) const {
       return sqrt(x*x + y*y);
+   }
+
+   double dist_pnts(const Coord &c) {
+      return (*this - c).norm();
    }
 
    T norm2(void) const {
@@ -102,6 +107,10 @@ typedef Coord<double> dcoord;
 
 dcoord to_dcoord(const icoord &d) {
    return {double(d.x), double(d.y)};
+}
+
+icoord to_icoord(const dcoord &d) {
+   return {int(round(d.x)), int(round(d.y))};
 }
 
 template <typename T=int>
@@ -372,9 +381,39 @@ private:
 
 };
 
+class Runner;
+
 class GoToTargetRegulator: public Planner {
 public:
-   virtual instruction act(void);
+   void reset(double tolerance_, Runner *runner_) {
+      tolerance = tolerance_;
+      runner = runner_;
+      error = 0.0;
+      ie = 0.0;
+      dedt = 0.0;
+      last_e = 0.0;
+      ttarget = {0, 0};
+      thrust_reducing = PodParams::max_thrust;
+      is_pointing = false;
+      is_reducing = false;
+   }
+   virtual instruction act(const dcoord &itarget);
+   void calc_target_vel(const dcoord &target, double &vt, double &alpha);
+   bool is_pointing_target(const dcoord &target);
+   int regulate_thrust(const dcoord &target, double angle);
+   instruction reduce(const dcoord &target, int thrust);
+
+   double error = 0.;
+   double ie = 0.0;
+   double last_e = 0.0;
+   double dedt  = 0.0;
+   Runner *runner;
+   double tolerance = 0.0;
+   bool is_pointing = false;
+   int thrust_reducing = PodParams::max_thrust;
+   bool is_reducing = false;
+   dcoord ttarget = {0, 0};
+   int thrust = PodParams::max_thrust;
 };
 /**
  * Auto-generated code below aims at helping you parse
@@ -389,12 +428,48 @@ public:
 
    }
 
+   dcoord direction(void) {
+      auto a_vel = abs_vel();
+      if (a_vel == 0.0)
+         a_vel = 1.0;
+      return {cvel().x/a_vel, cvel().y / a_vel};
+   }
+
    static void push_me(unique_ptr<Runner> r) {
        me.push_back(std::move(r));
    }
 
    static void push_opponent(unique_ptr<Runner> r) {
        other.push_back(std::move(r));
+   }
+
+   icoord station(int n) {
+      auto itr = stations.begin();
+      for (int i = 0; i < n; ++i)
+         ++itr;
+      return *itr;
+   }
+
+   icoord &cpos(void) {
+      return pos.back();
+   }
+
+   int cangle(void) {
+      return angles.back();
+   }
+
+   double abs_vel(void) {
+      return vels.back().norm();
+   }
+
+   ivec &cvel(void) {
+      return vels.back();
+   }
+
+   double pod_deflection(void) {
+      double al = radians(cangle());
+      dcoord face = {cos(al), sin(al)};
+      return to_dcoord(cvel()).angle_between(face);
    }
 
 public:
@@ -420,23 +495,147 @@ public:
    list<icoord>            predictions;
 };
 
+instruction GoToTargetRegulator::reduce(const dcoord &target, int thrust)
+{
+      if (!is_reducing) {
+         is_reducing =  true;
+         thrust_reducing = thrust - 30;
+      } else {
+         thrust_reducing -= 30;
+      }
+      if (thrust_reducing < 80)
+         thrust_reducing = 80;
+      return make_tuple(to_icoord(target), thrust_reducing, false, false);
+}
+
+instruction GoToTargetRegulator::act( const dcoord &target)
+{
+   if (is_pointing_target(target)) {
+      is_pointing = true;
+      auto ret = make_tuple(to_icoord(ttarget), PodParams::max_thrust, false, false);
+      cerr << "POINTED TO TARGET" << endl;
+      return ret;
+   }
+   is_pointing = false;
+   auto dir_ = runner->direction();
+   auto pt = target - to_dcoord(runner->cpos());
+   thrust = PodParams::max_thrust;
+   auto v = runner->abs_vel();
+   auto angle = runner->cangle();
+   if (v > 1.0)
+      thrust = regulate_thrust(target, angle);
+   error = 0.0;
+   if (dir_.x != 0.0 || dir_.y != 0.0)
+      error = pt.angle_between(dir_);
+   if (fabs(error) > 89.) {
+      reset(tolerance, runner);
+      return reduce(target, thrust);
+   }
+   ie += error;
+   dedt = last_e - error;
+   auto kp = runner->arena_params.gtKp;
+   auto ki = runner->arena_params.gtKi;
+   auto kd = runner->arena_params.gtKd;
+   auto c_angle = -(kp*error + ki*ie + kd*dedt);
+   last_e = error;
+   auto pt1 = rotate(pt, c_angle);
+   auto a_pt = rotate(pt, angle);
+   auto diff = fabs(pt1.angle_between(a_pt));
+   dcoord res = to_dcoord(runner->cpos()) + pt1;
+   double d = to_dcoord(runner->cpos()).dist_pnts(target);
+   cerr << "DDD=" << d << endl;
+   if (diff > 18.0 && d < 3500) {
+      return reduce(res, thrust);
+   }
+   is_reducing = false;
+   return make_tuple(to_icoord(res), thrust, false, false);
+}
+
+void GoToTargetRegulator::calc_target_vel(const dcoord &target, double &vt, double &alpha)
+{
+   auto p1 = to_dcoord(runner->cpos());
+   auto tg = to_dcoord(runner->cvel()).unit_vec();
+   auto circ = find_rad_from_two_points_and_tangent(p1, tg, target);
+   auto rad = circ.rad + 600.;
+   alpha = fabs(radians(runner->pod_deflection()));
+   vt = rad * (1.0 - ArenaParams::friction_fac) * tan(alpha);
+   static const double omega = radians(PodParams::rot_vel);
+   double vt2 = omega * rad;
+   if (vt2 < vt) {
+      cerr << "reducing velocity to meet max radial vel" << endl;
+      vt = vt2;
+   }
+}
+
+bool GoToTargetRegulator::is_pointing_target(const dcoord &target)
+{
+   if (runner->abs_vel() < 2.0) {
+      cerr << "VELOCITY TOO SMALL TO TELL POINTING" << endl;
+      return false;
+   }
+   auto direc = to_dcoord(runner->cvel()).unit_vec();
+   auto p1 = to_dcoord(runner->cpos());
+   auto p2 = p1 + direc;
+   auto perp = rotate(direc, 90);
+   const dcoord &p3 = target;
+   auto p4 = p3 + perp;
+   ttarget = line_intersect(p1, p2, p3, p4);
+   double fac = location_along_segment(p1, p2, ttarget);
+   double d = ttarget.dist_pnts(target);
+   return d <= tolerance && fac >= 0.;
+}
+
+int GoToTargetRegulator::regulate_thrust(const dcoord &target, double angle)
+{
+   double pod_def = runner->pod_deflection();
+   double v_tar = 0;
+   double alpha = 0.;
+   if (angle < 1.0 and fabs(pod_def) < 1.0) {
+      v_tar = INT_MAX;
+      alpha = 0.0;
+   } else {
+      calc_target_vel(target, v_tar, alpha);
+   }
+   double thrust_ = v_tar * (1 - ArenaParams::friction_fac) / cos(alpha);
+   thrust_ /= PodParams::fric_thruts_to_thrust_ratio;
+   thrust_ = std::min(thrust_, double(PodParams::max_thrust));
+   thrust_ = std::max(thrust_, 0.0);
+   thrust = round(thrust_);
+   return thrust;
+}
 
 class Planner3: public Planner {
 public:
    virtual void plan(icoord target, Runner *runner_) {
       runner = runner_;
+      gt_regulator->reset(ArenaParams::station_tolerance, runner);
    }
 
-   virtual instruction act(void) {
-      auto target = to_dcoord(runner->stations.front());
-      auto pos = to_dcoord(runner->pos.back());
-      auto angle = angleabs2angle(runner->angles.back(), target, pos);
-      auto [ tc, thrust, boost, shield ] = gt_regulator->act();
-   }
+   virtual instruction act(void);
+
 private:
    unique_ptr<GoToTargetRegulator> gt_regulator = make_unique<GoToTargetRegulator>();
 };
 
+instruction Planner3::act(void)
+{
+   auto target = to_dcoord(runner->station(0));
+   auto pos = to_dcoord(runner->cpos());
+   //auto angle = angleabs2angle(runner->cangle(), target, pos);
+   auto [ tc, thrust, boost, shield ] = gt_regulator->act(target);
+   if (gt_regulator->is_pointing) {
+      auto v1 = runner->vels.back().norm();
+      if (v1 > 10.) {
+         auto s = v1 / (1.0 - ArenaParams::friction_fac);
+         auto num_turns = s / v1 * 0.5;
+         auto dist = pos.dist_pnts(target);
+         auto turns_to_targ = dist / v1;
+         if (turns_to_targ <= num_turns)
+            return make_tuple(runner->station(1), 0, false, false);
+      }
+   }
+   return make_tuple(tc, thrust, boost, shield);
+}
 
 class Arena {
 public:

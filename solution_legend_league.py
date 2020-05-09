@@ -632,7 +632,6 @@ class Planner3:
                 ang_abs_rad = np.radians(angle_abs)
                 dir_ = np.array((math.cos(ang_abs_rad), math.sin(ang_abs_rad)))
                 dang = math.fabs(angle_between(n_p, dir_))
-                num_turns_to_rot = dang / PodParams.rot_vel
                 #print ("num_turns_to_rot={} num_turns={}".format(num_turns_to_rot, num_turns), file=sys.stderr)
                 #if num_turns > num_turns_to_rot:
                 #    #print ("NO NEED TO NEUTRAL SO LONG", file=sys.stderr)
@@ -933,7 +932,7 @@ class GoToTargetRegulator:
         return False
 
     def regulate_thrust(self, target, angle):
-        pod_def = self.tracker.pod_deflection()
+        #pod_def = self.tracker.pod_deflection()
         #print ("pod deflection={}".format(pod_def), file=sys.stderr)
         if angle < 1.0 and math.fabs(self.tracker.pod_deflection()) < 1:
             v_tar, alpha = 99999999, 0
