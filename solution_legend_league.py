@@ -49,19 +49,11 @@ class ArenaParams:
     friction_fac = 0.85 # the current speed vector of each pod is multiplied by that factor
     station_tolerance = 450
     def __init__(self):
-        self.r100                   = 3600.
-        self.minimal_straight_dist  = 0.
-        self.hard_drift_turns       = 4
-        self.super_hard_drift_turns = 0.0
         self.start_with_boost       = False
         self.defender_dist_spare    = 1000
-        self.break_dist             = 0
-        self.break_fac              = 0.0
         self.gtKp                   = 1.0
         self.gtKi                   = 0
         self.gtKd                   = 0
-        self.max_face_dir_error     = 45
-        self.mitbader_vel           = 130
 
 class ShoshParams(ArenaParams):
     def __init__(self):
@@ -74,7 +66,6 @@ class TrampolineParams(ArenaParams):
 class MacbilitParams(ArenaParams):
     def __init__(self):
         ArenaParams.__init__(self)
-        self.r100 = 1800.
 
 class TilParams(ArenaParams):
     def __init__(self):
@@ -83,18 +74,15 @@ class TilParams(ArenaParams):
 class MehumashParams(ArenaParams):
     def __init__(self):
         ArenaParams.__init__(self)
-        self.r100 = 3000.
 
 class HostileParams(ArenaParams):
     def __init__(self):
         ArenaParams.__init__(self)
-        self.r100 = 2200.
 
 
 class ZigzagParams(ArenaParams):
     def __init__(self):
         ArenaParams.__init__(self)
-        self.r100 = 2000.
 
 class ArrowParams(ArenaParams):
     def __init__(self):
@@ -103,26 +91,20 @@ class ArrowParams(ArenaParams):
 class PyramidParams(ArenaParams):
     def __init__(self):
         ArenaParams.__init__(self)
-        self.gtKp = 1.0
 
 class TrapezParams(ArenaParams):
     def __init__(self):
         ArenaParams.__init__(self)
-        self.vel_const = 10.0
-        self.super_hard_drift_turns = 1.5
-        self.mitbader_vel           = 100
 
 class DaltonParams(ArenaParams):
     def __init__(self):
         ArenaParams.__init__(self)
-        self.r1planner = Planner3()
         self.gtKp = 0.5
         self.start_with_boost = True
 
 class TriangleParams(ArenaParams):
     def __init__(self):
         ArenaParams.__init__(self)
-        self.mitbader_vel           = 100
         #self.planner = BlindPlanner()
 
 def to_array(p):
@@ -221,22 +203,6 @@ def find_rad_from_two_points_and_tangent(p1, tang, p2):
     dy = p1[1] - c[1]
     return math.sqrt(dx*dx + dy*dy), c
 
-def circ_rad(p, q, r):
-    (x1, y1), (x2, y2), (x3, y3) = p, q, r
-    c = (x1-x2)**2 + (y1-y2)**2
-    a = (x2-x3)**2 + (y2-y3)**2
-    b = (x3-x1)**2 + (y3-y1)**2
-    s = 2*(a*b + b*c + c*a) - (a*a + b*b + c*c)
-    if s == 0.0:
-        return (0, 0), 100000.
-    px = (a*(b+c-a)*x1 + b*(c+a-b)*x2 + c*(a+b-c)*x3) / s
-    py = (a*(b+c-a)*y1 + b*(c+a-b)*y2 + c*(a+b-c)*y3) / s
-    ar = math.sqrt(a)
-    br = math.sqrt(b)
-    cr = math.sqrt(c)
-    r = ar*br*cr / math.sqrt((ar+br+cr)*(-ar+br+cr)*(ar-br+cr)*(ar+br-cr))
-    return (px, py), r
-
 def rotate(p, origin=(0, 0), degrees=0):
     angle = np.deg2rad(degrees)
     R = np.array([[np.cos(angle), -np.sin(angle)],
@@ -244,41 +210,6 @@ def rotate(p, origin=(0, 0), degrees=0):
     o = np.atleast_2d(origin)
     p = np.atleast_2d(p)
     return np.squeeze((R @ (p.T-o.T) + o.T).T)
-
-def calc_node_approach(p1, p2, p3, rad, params):
-    #calculate relative unit vectors
-    p21 = np.array(p1) - np.array(p2)
-    p21 = p21 / linalg.norm(p21)
-    p23 = np.array(p3) - np.array(p2)
-    p23 = p23 / linalg.norm(p23)
-    #calculate the angle of stations2
-    angle = np.math.atan2(np.linalg.det([p21,p23]),np.dot(p21,p23))
-    angle_deg = np.degrees(angle)
-    #print("ANGLE={}".format(angle_deg), file=sys.stderr)
-    extra_fac = 0
-    if angle_deg > 175.0 or angle_deg < -175:
-        t_pivot = p21 * rad + np.array(p2)
-        target = p2
-        target0 = p21 * 300 + np.array(p2)
-    else:
-        #pivot is the curve central point
-        pivot = p21 + p23
-        pivot = (pivot / linalg.norm(pivot)) * rad
-        t_pivot = pivot + p2
-
-        cross = np.cross(p21, p23)
-        rot90 = 90 if cross < 0 else -90
-        #direct is the vector from the curve central point to the rotation start point
-        direct = rotate(p21, degrees=rot90) * rad
-        break_vec = p21 * params.break_dist
-        target = t_pivot + direct + break_vec
-        target0 = target + p21 * params.minimal_straight_dist
-    #if math.fabs(angle_deg) < 51:
-    #    extra_fac = 0.3
-    fac1 = location_along_segment(p1, p2, target) - (params.break_fac + extra_fac)
-    fac0 = location_along_segment(p1, p2, target0) - (params.break_fac + extra_fac)
-
-    return (t_pivot[0], t_pivot[1]), ((target0[0], target0[1]), (target[0], target[1])), (fac0, fac1), angle_deg
 
 def location_along_segment(p, q, x):
     """
@@ -601,7 +532,7 @@ class Genetic:
 
         best_sol = []
         best_fit = 0.
-        while (time.time() - start) < 0.04:
+        while (time.time() - start) < 0.035:
             fit = self.fitness(crms)
 
             for f, c in zip(fit, crms):
@@ -668,6 +599,7 @@ class DefenceGenetic(Genetic):
 
         for i, (t, a) in enumerate(zip(thrust, angle)):
             dist = self.dist_to_opp(pos, i)
+            #dist = dist_pnts(pos, self.opp.stations[0])
             if dist <= 500:
                 return 1.0
             if dist < min_dist:
@@ -685,7 +617,6 @@ class Planner3:
         self.gt_regulator = GoToTargetRegulator()
 
     def plan(self, pos, angle_abs, target, stations, tracker, params):
-        angle = angleabs2angle(angle_abs, target, pos)
         self.tracker = tracker
         self.gt_regulator.reset(ArenaParams.station_tolerance, tracker, params)
 
@@ -1070,7 +1001,6 @@ class Tracker:
     other = None
 
     def __init__(self, num_laps, me):
-        self.num_laps           = 0
         self.arena_params       = None
         self.pod_params         = None
         self.pos                = []

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <memory>
 #include <utility>
+#include <tuple>
 
 using namespace std;
 
@@ -18,7 +19,6 @@ double radians(double ang) {
 double degrees(double rad) {
    return rad * 180.0 / PI;
 }
-
 
 template <typename T=int>
 T clip(T val, T v1, T v2) {
@@ -99,6 +99,10 @@ struct Coord {
 
 typedef Coord<int>   icoord;
 typedef Coord<double> dcoord;
+
+dcoord to_dcoord(const icoord &d) {
+   return {double(d.x), double(d.y)};
+}
 
 template <typename T=int>
 double relAngle(const Coord<T> &p1, const Coord<T> &p2) {
@@ -263,9 +267,26 @@ void test_location_along_segment()
 
 typedef icoord ivec;
 
-struct PodParams {};
-struct ArenaParams {
+class Planner;
 
+struct PodParams {
+   static constexpr int max_thrust = 200;
+   static constexpr int rot_vel = 18;
+   static constexpr double fric_thruts_to_thrust_ratio = 0.85;
+
+   unique_ptr<Planner> planner = make_unique<Planner>();
+
+};
+struct ArenaParams {
+   static constexpr int station_rad = 600;
+   static constexpr double friction_fac = 0.85;
+   static constexpr int station_tolerance = 450;
+
+   bool start_with_boost = false;
+   int defender_dist_spare = 1000;
+   double gtKp = 1.0;
+   double gtKi = 0.;
+   double gtKd = 0;
 };
 
 ArenaParams HostileParams() {
@@ -281,7 +302,10 @@ ArenaParams TriangleParams() {
 };
 
 ArenaParams DaltonParams() {
-   return ArenaParams();
+   auto ret = ArenaParams();
+   ret.gtKp = 0.5;
+   ret.start_with_boost = true;
+   return ret;
 };
 
 ArenaParams ArrowParams() {
@@ -316,7 +340,27 @@ ArenaParams ZigzagParams() {
    return ArenaParams();
 };
 
+typedef tuple<icoord, int, bool, bool> instruction;
+
 class Runner;
+
+class Planner {
+public:
+
+   void reset(Runner *runner_) { runner = runner_; }
+
+   virtual void plan(icoord target, Runner *runner_) {
+      runner = runner_;
+   }
+
+   virtual instruction act(void) {
+      icoord target = {0, 0};
+      return make_tuple(target, 0, false, false);
+   }
+
+protected:
+   Runner *runner = nullptr;
+};
 
 class Predictor
 {
@@ -327,6 +371,72 @@ private:
 
 
 };
+
+class GoToTargetRegulator: public Planner {
+public:
+   virtual instruction act(void);
+};
+/**
+ * Auto-generated code below aims at helping you parse
+ * the standard input according to the problem statement.
+ **/
+
+class Runner
+{
+public:
+   Runner(int num_laps, bool is_me) {
+
+
+   }
+
+   static void push_me(unique_ptr<Runner> r) {
+       me.push_back(std::move(r));
+   }
+
+   static void push_opponent(unique_ptr<Runner> r) {
+       other.push_back(std::move(r));
+   }
+
+public:
+   static                  vector<unique_ptr<Runner> > me;
+   static                  vector<unique_ptr<Runner> > other;
+
+   int                     num_laps = 0;
+   ArenaParams             arena_params;
+   PodParams               pod_params;
+   list<icoord>            pos;
+   list<int>               angles;
+   list<ivec>              vels;
+   list<int>               thrusts;
+   int                     next_cp = 0;
+   int                     prev_cp = 0;
+   list<icoord>            stations;
+   int                     time_left_to_punch = 0;
+   int                     passed_stations = -1;
+   bool                    is_me = false;
+   bool                    boost = false;
+   int                     boost_turns = 0;
+   shared_ptr<Predictor>   predictor;
+   list<icoord>            predictions;
+};
+
+
+class Planner3: public Planner {
+public:
+   virtual void plan(icoord target, Runner *runner_) {
+      runner = runner_;
+   }
+
+   virtual instruction act(void) {
+      auto target = to_dcoord(runner->stations.front());
+      auto pos = to_dcoord(runner->pos.back());
+      auto angle = angleabs2angle(runner->angles.back(), target, pos);
+      auto [ tc, thrust, boost, shield ] = gt_regulator->act();
+   }
+private:
+   unique_ptr<GoToTargetRegulator> gt_regulator = make_unique<GoToTargetRegulator>();
+};
+
 
 class Arena {
 public:
@@ -403,50 +513,6 @@ const Arena * ArenaDetector::detect(const list<icoord> &stations_)
    return nullptr;
 }
 
-
-/**
- * Auto-generated code below aims at helping you parse
- * the standard input according to the problem statement.
- **/
-
-class Runner
-{
-public:
-   Runner(int num_laps, bool is_me) {
-
-
-   }
-
-   static void push_me(unique_ptr<Runner> r) {
-       me.push_back(std::move(r));
-   }
-
-   static void push_opponent(unique_ptr<Runner> r) {
-       other.push_back(std::move(r));
-   }
-
-private:
-   static                  vector<unique_ptr<Runner> > me;
-   static                  vector<unique_ptr<Runner> > other;
-
-   int                     num_laps = 0;
-   ArenaParams             arena_params;
-   PodParams               pod_params;
-   list<icoord>             pos;
-   list<int>               angles;
-   list<ivec>              vels;
-   list<int>               thrusts;
-   int                     next_cp = 0;
-   int                     prev_cp = 0;
-   list<icoord>             stations;
-   int                     time_left_to_punch = 0;
-   int                     passed_stations = -1;
-   bool                    is_me = false;
-   bool                    boost = false;
-   int                     boost_turns = 0;
-   shared_ptr<Predictor>   predictor;
-   list<icoord>             predictions;
-};
 
 vector<unique_ptr<Runner> > Runner::me;
 vector<unique_ptr<Runner> > Runner::other;
