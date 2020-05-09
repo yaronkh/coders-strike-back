@@ -21,6 +21,10 @@ double degrees(double rad) {
    return rad * 180.0 / PI;
 }
 
+int idegrees(double rad) {
+   return int(round(degrees(rad)));
+}
+
 template <typename T=int>
 T clip(T val, T v1, T v2) {
       if (val < v1)
@@ -78,6 +82,12 @@ struct Coord {
 
    Coord operator * (T t) {
       return {x * t, y * t};
+   }
+
+   Coord &operator *= (T t) {
+      x *= t;
+      y *= t;
+      return *this;
    }
 
    friend Coord operator + (const Coord &p1, const Coord &p2) {
@@ -364,6 +374,40 @@ public:
     }
 };
 
+struct PodPos {
+    icoord pos;
+    ivec vel;
+    int angle;
+};
+
+class Simulator {
+public:
+   static dcoord calc_next_rotation(const icoord &pos, int angle, const icoord &target) {
+      dcoord p12 = to_dcoord(target - pos).unit_vec();
+      dcoord pface = unit_coord(angle);
+      double dangle = pface.angle_between(p12);
+      if (fabs(dangle) <= PodParams::rot_vel)
+         return p12;
+      auto d = (dangle > 0) ? PodParams::rot_vel : - PodParams::rot_vel;
+      return  rotate(pface, d);
+   }
+
+   static PodPos calc_next_turn(const icoord &target, const icoord &pos, const icoord &vel,
+         int angle, int thrust, bool boost, bool shield)
+   {
+      dcoord pface = calc_next_rotation(pos, angle, target);
+      dcoord thrust_vec = pface * thrust;
+      dcoord new_vel = to_dcoord(vel) + thrust_vec;
+      dcoord n_pos = to_dcoord(pos) + new_vel;
+      new_vel *= ArenaParams::friction_fac;
+      icoord inew_vel = to_icoord(new_vel);
+      int new_angle = idegrees(atan2(pface.x, pface.y));
+      if (new_angle < 0)
+         new_angle += 360;
+      return {to_icoord(n_pos), inew_vel, new_angle};
+   }
+};
+
 class Runner;
 
 class Planner {
@@ -534,7 +578,7 @@ instruction GoToTargetRegulator::act( const dcoord &target)
    auto pt = target - to_dcoord(runner->cpos());
    thrust = PodParams::max_thrust;
    auto v = runner->abs_vel();
-   auto angle = runner->cangle();
+   auto angle = angleabs2angle(runner->cangle(), target, to_dcoord(runner->cpos()));
    if (v > 1.0)
       thrust = regulate_thrust(target, angle);
    error = 0.0;
