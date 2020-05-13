@@ -473,6 +473,10 @@ public:
    pair<int, double> fitness[GENERATION_SIZE];
    int selection[GENERATION_SIZE];
 
+   int best_thrust = 0;
+   int best_angle = 0;
+   double best_rank = -9999.9999;
+
    //option to hold set of thrust and angle commands
    int thrust_cmds[NUM_OPT_COMMANDS];
    int angle_cmds[NUM_OPT_COMMANDS];
@@ -689,9 +693,16 @@ void Genetic::guess_initial_set(void)
 
 void Genetic::calc_fitness(void)
 {
+   instruction best;
    double tot = 0.;
+   double best_rank = -9999.99;
    for (int i=0; i < GENERATION_SIZE; ++i) {
       double tar = target(i);
+      if (tar > best_rank) {
+         best_rank = tar;
+         best_thrust = thrust_cmds[0];
+         best_angle = angle_cmds[0];
+      }
       tot += tar;
       fitness[i] = pair<int, double>(i, tar);
    }
@@ -761,6 +772,7 @@ void Genetic::mutate(void)
 
 instruction Genetic::act(void)
 {
+   best_rank = -999999.99;
    high_resolution_clock::time_point t1 = high_resolution_clock::now();
    guess_initial_set();
    high_resolution_clock::time_point t2 = high_resolution_clock::now();
@@ -776,7 +788,11 @@ instruction Genetic::act(void)
       t2 = high_resolution_clock::now();
       time_span = t2 - t1;
    } while (time_span < milliseconds(35));
-#error recalc fitness and return the best command
+   calc_fitness();
+   double b_angle_rad = radians(best_angle);
+   dcoord dtarget = {30000. * cos(b_angle_rad), 30000. * sin(b_angle_rad)};
+   icoord itarget = to_icoord(dtarget);
+   return {itarget, best_thrust, false, false};
 }
 
 instruction GoToTargetRegulator::reduce(const dcoord &target, int thrust)
