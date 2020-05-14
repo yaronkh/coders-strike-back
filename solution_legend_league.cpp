@@ -549,12 +549,75 @@ public:
  * the standard input according to the problem statement.
  **/
 
+template <typename T>
+void record_data(T data, list<T> &storage)
+{
+   storage.push_back(data);
+   if (storage.size() >= 10)
+      storage.pop_front();
+}
+
+template <class T>
+class CircularVecotr {
+public:
+   typedef typename vector<T>::const_iterator Itr;
+
+private:
+   const vector<T> *container = nullptr;
+   typedef typename vector<T>::size_type size_type;
+   size_type pos = 0;
+public:
+   void set(const vector<T> &c) { container = &c;}
+   void start_at(size_type i) {pos = i;}
+   const T &last() {
+      return (*this)[-1];
+   };
+
+   CircularVecotr &operator ++(void) {++pos; if(pos == container->size()) pos = 0;}
+
+   const T& operator[](int i) {
+      auto ppos = ((pos + i) % container->size());
+      return (*container)[ppos];
+   }
+
+   Itr begin() { return container->begin() + pos;}
+};
+
 class Runner
 {
 public:
-   Runner(int num_laps, bool is_me) {
+   static                   vector<unique_ptr<Runner> > me;
+   static                   vector<unique_ptr<Runner> > other;
 
+   int                      num_laps = 0;
+   ArenaParams              arena_params;
+   PodParams                pod_params;
+   list<icoord>             pos;
+   list<int>                angles;
+   list<ivec>               vels;
+   list<int>                thrusts;
+   int                      next_cp = 0;
+   int                      prev_cp = 0;
+   CircularVecotr<icoord>   stations;
+   int                      time_left_to_punch = 0;
+   int                      passed_stations = -1;
+   bool                     is_me = false;
+   bool                     boost = false;
+   int                      boost_turns = 0;
+   shared_ptr<Predictor>    predictor;
+   list<icoord>             predictions;
 
+   Runner(int num_laps_, bool is_me_);
+
+   virtual void act(void);
+
+   void report_pos(const icoord &pos_, const icoord &vel, int angle, int next_cp_);
+   void store_data(const icoord &pos_, const icoord &vel_, int angle);
+
+   void write(const instruction &inst);
+
+   dcoord thrust_vec(int thrust, const icoord &target) {
+      return to_dcoord(target - cpos()).unit_vec() * thrust;
    }
 
    dcoord direction(void) {
@@ -600,29 +663,86 @@ public:
       dcoord face = {cos(al), sin(al)};
       return to_dcoord(cvel()).angle_between(face);
    }
-
-public:
-   static                  vector<unique_ptr<Runner> > me;
-   static                  vector<unique_ptr<Runner> > other;
-
-   int                     num_laps = 0;
-   ArenaParams             arena_params;
-   PodParams               pod_params;
-   list<icoord>            pos;
-   list<int>               angles;
-   list<ivec>              vels;
-   list<int>               thrusts;
-   int                     next_cp = 0;
-   int                     prev_cp = 0;
-   list<icoord>            stations;
-   int                     time_left_to_punch = 0;
-   int                     passed_stations = -1;
-   bool                    is_me = false;
-   bool                    boost = false;
-   int                     boost_turns = 0;
-   shared_ptr<Predictor>   predictor;
-   list<icoord>            predictions;
 };
+class Arena {
+public:
+    Arena(const string &name_, const list<icoord> &cps, const ArenaParams &a_params) :
+        name(name_), stations(cps), params(a_params) {}
+
+    bool pointInTrack(const icoord &p) const;
+
+    string name;
+    list <icoord> stations;
+    ArenaParams params;
+};
+
+class ArenaDetector{
+public:
+    ArenaDetector(void);
+
+    const Arena *detect(const vector<icoord> &stations);
+
+    list<Arena> tracks;
+    const Arena *detected_track = nullptr;
+    vector<icoord> stations;
+};
+
+static ArenaDetector detector;
+
+Runner::Runner(int num_laps_, bool is_me_) {
+   is_me = is_me_;
+   num_laps = num_laps_;
+   stations.set(detector.stations);
+}
+
+void Runner::write(const instruction &inst)
+{
+   auto [tc, thrust, boost_, shield] = inst;
+   if (!boost && boost_) {
+      boost_turns = 4;
+      boost = boost_;
+   }
+
+   if (boost_turns > 0)
+      --boost_turns;
+
+   cout << tc.x << " " << tc.y << " ";
+   if (shield)
+      cout << "SHIELD";
+   else if (boost_)
+      cout << "BOOST";
+   else
+      cout << thrust;
+   cout << endl;
+}
+
+void Runner::act(void)
+{
+   if (prev_cp != next_cp) {
+      cerr << "RUNNER:ACT now planning" << endl;
+      pod_params.planner->plan(stations[0], this);
+   }
+
+   write(pod_params.planner->act());
+}
+
+void Runner::store_data(const icoord &pos_, const icoord &vel_, int angle)
+{
+   record_data(pos_, pos);
+   record_data(angle, angles);
+   record_data(vel_, vels);
+}
+
+void Runner::report_pos(const icoord &pos_, const icoord &vel, int angle, int next_cp_)
+{
+   store_data(pos_, vel, angle);
+   if (next_cp_ != next_cp) {
+      ++passed_stations;
+      ++stations;
+   }
+   prev_cp = next_cp;
+   next_cp = next_cp_;
+}
 
 void Genetic::chromo_encode(int entry)
 {
@@ -937,18 +1057,6 @@ instruction Planner3::act(void)
    return make_tuple(tc, thrust, boost, shield);
 }
 
-class Arena {
-public:
-    Arena(const string &name_, const list<icoord> &cps, const ArenaParams &a_params) :
-        name(name_), stations(cps), params(a_params) {}
-
-    bool pointInTrack(const icoord &p) const;
-
-    string name;
-    list <icoord> stations;
-    ArenaParams params;
-};
-
 bool Arena::pointInTrack(const icoord &p) const
 {
    for (auto &c: stations)
@@ -959,16 +1067,6 @@ bool Arena::pointInTrack(const icoord &p) const
    return false;
 }
 
-class ArenaDetector{
-public:
-    ArenaDetector(void);
-
-    const Arena *detect(const list<icoord> &stations);
-
-    list<Arena> tracks;
-    const Arena *detected_track = nullptr;
-    list<icoord> stations;
-};
 
 
 ArenaDetector::ArenaDetector(void)
@@ -988,7 +1086,7 @@ ArenaDetector::ArenaDetector(void)
     tracks.push_back({"Zigzag",     {  { 10660, 2295 }, { 8695,  7469 },  { 7225,  2174 },                             { 3596,  5288 },                                        { 13862, 5092 }                           }, ZigzagParams()   });
 }
 
-const Arena * ArenaDetector::detect(const list<icoord> &stations_)
+const Arena * ArenaDetector::detect(const vector<icoord> &stations_)
 {
    int num_tracks = 0;
    stations = stations_;
@@ -1041,14 +1139,14 @@ int main()
 
     int check_point_count;
     cin >> check_point_count; cin.ignore();
-    std::list<icoord> stations;
+    std::vector<icoord> stations;
+    stations.reserve(check_point_count);
     for (int i = 0; i < check_point_count; i++) {
         int xs;
         int ys;
         cin >> xs >> ys; cin.ignore();
         stations.push_back({xs, ys});
     }
-    ArenaDetector detector;
     if (!detector.detect(stations)) {
        cerr << " ******COULD NOT DETECT ARENA VERY BAD *********" << endl;
        exit(255);
