@@ -114,7 +114,7 @@ struct Coord {
    double angle_between(const Coord &v2) {
       auto v1_u = unit_vec();
       auto v2_u = v2.unit_vec();
-      auto c = clip(dot(*this, v2), -1., 1.);
+      auto c = clip(dot(v1_u, v2_u), -1., 1.);
       auto ret = degrees(acos(c));
       auto cr = v1_u.cross(v2_u);
       return (cr >= 0) ? ret : -ret;
@@ -239,8 +239,10 @@ fcirc find_rad_from_two_points_and_tangent(const dcoord &p1, const dcoord &tang,
 
 double angleabs2angle(double angle_abs, const dcoord &target, const dcoord &pos)
 {
-   auto angle_uv = unit_coord(radians(angle_abs));
+   auto angle_uv = unit_coord(angle_abs);
    auto t = target - pos;
+   cerr << "ab=" << angle_abs << " angle_uv="<<angle_uv << endl;
+   cerr << "target=" << target << " pos="<<pos <<" t=" << t << endl;
    return angle_uv.angle_between(t);
 }
 
@@ -296,6 +298,7 @@ void test_location_along_segment()
 typedef icoord ivec;
 
 class Planner;
+class Planner3;
 
 struct PodParams {
    static constexpr int max_thrust = 200;
@@ -303,8 +306,8 @@ struct PodParams {
    static constexpr double fric_thruts_to_thrust_ratio = 0.85;
    static constexpr int pod_rad = 250;
 
-   unique_ptr<Planner> planner = make_unique<Planner>();
-
+   unique_ptr<Planner> planner;
+   PodParams();
 };
 struct ArenaParams {
    static constexpr int station_rad = 600;
@@ -573,7 +576,11 @@ public:
       return (*this)[-1];
    };
 
-   CircularVecotr &operator ++(void) {++pos; if(pos == container->size()) pos = 0;}
+   CircularVecotr &operator ++(void) {
+      ++pos;
+      if(pos == container->size()) pos = 0;
+      return *this;
+   }
 
    const T& operator[](int i) {
       auto ppos = ((pos + i) % container->size());
@@ -718,6 +725,7 @@ void Runner::write(const instruction &inst)
 
 void Runner::act(void)
 {
+   //#cerr << "prev_cp="<< prev_cp << " next_cp=" << next_cp << endl;
    if (prev_cp != next_cp) {
       cerr << "RUNNER:ACT now planning" << endl;
       pod_params.planner->plan(stations[0], this);
@@ -736,6 +744,7 @@ void Runner::store_data(const icoord &pos_, const icoord &vel_, int angle)
 void Runner::report_pos(const icoord &pos_, const icoord &vel, int angle, int next_cp_)
 {
    store_data(pos_, vel, angle);
+   //cerr << "report pos next_cp_= " << next_cp_ << "next_cp = " << next_cp << endl;
    if (next_cp_ != next_cp) {
       ++passed_stations;
       ++stations;
@@ -936,12 +945,14 @@ instruction GoToTargetRegulator::act( const dcoord &target)
       cerr << "POINTED TO TARGET" << endl;
       return ret;
    }
+   cerr << "tg acting" << endl;
    is_pointing = false;
    auto dir_ = runner->direction();
    auto pt = target - to_dcoord(runner->cpos());
    thrust = PodParams::max_thrust;
    auto v = runner->abs_vel();
    auto angle = angleabs2angle(runner->cangle(), target, to_dcoord(runner->cpos()));
+   cerr << "angle rel=" << angle << endl;
    if (v > 1.0)
       thrust = regulate_thrust(target, angle);
    error = 0.0;
@@ -1039,21 +1050,25 @@ private:
 
 instruction Planner3::act(void)
 {
+   cerr << "Planner3::act" << endl;
    auto target = to_dcoord(runner->station(0));
    auto pos = to_dcoord(runner->cpos());
    //auto angle = angleabs2angle(runner->cangle(), target, pos);
    auto [ tc, thrust, boost, shield ] = gt_regulator->act(target);
    if (gt_regulator->is_pointing) {
+      cerr << "seems to be pointing " << endl;
       auto v1 = runner->vels.back().norm();
       if (v1 > 10.) {
          auto s = v1 / (1.0 - ArenaParams::friction_fac);
          auto num_turns = s / v1 * 0.5;
          auto dist = pos.dist_pnts(target);
          auto turns_to_targ = dist / v1;
+         cerr << "turns_to_targ=" << turns_to_targ << endl;
          if (turns_to_targ <= num_turns)
             return make_tuple(runner->station(1), 0, false, false);
       }
    }
+   cerr << "Planner3 returning " << tc << " " << thrust << endl;
    return make_tuple(tc, thrust, boost, shield);
 }
 
@@ -1124,6 +1139,10 @@ public:
    }
 };
 
+PodParams::PodParams()
+{
+   planner = make_unique<Planner3>();
+}
 
 
 int main()
@@ -1163,26 +1182,22 @@ int main()
             int angle; // angle of your pod
             int nextCheckPointId; // next check point id of your pod
             cin >> x >> y >> vx >> vy >> angle >> nextCheckPointId; cin.ignore();
+            Runner::me[i]->report_pos({x, y}, {vx, vy}, angle, nextCheckPointId);
         }
         for (int i = 0; i < 2; i++) {
-            int x2; // x position of the opponent's pod
-            int y2; // y position of the opponent's pod
-            int vx2; // x speed of the opponent's pod
-            int vy2; // y speed of the opponent's pod
-            int angle2; // angle of the opponent's pod
-            int nextCheckPointId2; // next check point id of the opponent's pod
-            cin >> x2 >> y2 >> vx2 >> vy2 >> angle2 >> nextCheckPointId2; cin.ignore();
+            int x; // x position of the opponent's pod
+            int y; // y position of the opponent's pod
+            int vx; // x speed of the opponent's pod
+            int vy; // y speed of the opponent's pod
+            int angle; // angle of the opponent's pod
+            int nextCheckPointId; // next check point id of the opponent's pod
+            cin >> x >> y >> vx >> vy >> angle >> nextCheckPointId; cin.ignore();
+            Runner::other[i]->report_pos({x, y}, {vx, vy}, angle, nextCheckPointId);
         }
-
-        // Write an action using cout. DON'T FORGET THE "<< endl"
-        // To debug: cerr << "Debug messages..." << endl;
-
-
-        // You have to output the target position
-        // followed by the power (0 <= power <= 200)
-        // i.e.: "x y power"
-        cout << "8000 4500 100" << endl;
-        cout << "8000 4500 100" << endl;
+        cerr << "acting" << endl;
+        Runner::me[0]->act();
+        //Runner::me[1]->act();
+        cout << "8000 8000 0" << endl;
     }
 
 #else
