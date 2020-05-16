@@ -397,7 +397,7 @@ class Simulator {
 public:
    static dcoord calc_next_rotation(const icoord &pos, int angle, const icoord &target) {
       dcoord p12 = to_dcoord(target - pos).unit_vec();
-      dcoord pface = unit_coord(angle);
+      dcoord pface = unit_coord(double(angle));
       double dangle = pface.angle_between(p12);
       if (fabs(dangle) <= PodParams::rot_vel)
          return p12;
@@ -414,7 +414,7 @@ public:
       res.pos = to_icoord(to_dcoord(pos) + new_vel);
       new_vel *= ArenaParams::friction_fac;
       res.vel = to_icoord(new_vel);
-      res.angle = idegrees(atan2(pface.x, pface.y));
+      res.angle = idegrees(atan2(pface.y, pface.x));
       if (res.angle < 0)
          res.angle += 360;
    }
@@ -450,15 +450,15 @@ private:
 
 class Genetic: public Planner {
 public:
-   static constexpr int NUM_OPT_COMMANDS = 6;
+   static constexpr int NUM_OPT_COMMANDS = 12;
    static constexpr int NUM_BITS_PER_COMMAND = 8;
    static constexpr int CMD_RES_DIVIDER = (1 << NUM_BITS_PER_COMMAND) - 1;
    static constexpr int SINGLE_CMD_BITS = 2 * NUM_OPT_COMMANDS * NUM_BITS_PER_COMMAND;
-   static constexpr double THRUST_RESOLUTION = double(PodParams::max_thrust) / (CMD_RES_DIVIDER - 1);
-   static constexpr double ANGLE_RES = 360.0 / (CMD_RES_DIVIDER - 1);
+   static constexpr double THRUST_RESOLUTION = double(PodParams::max_thrust) / CMD_RES_DIVIDER;
+   static constexpr double ANGLE_RES = 2.*18. / CMD_RES_DIVIDER;
    static constexpr int GENERATION_SIZE = 8;
 
-   static constexpr int HIT_DIST = ArenaParams::station_rad - PodParams::pod_rad;
+   static constexpr int HIT_DIST = 100;//ArenaParams::station_rad - PodParams::pod_rad;
    static constexpr int HIT_DIST2 = HIT_DIST * HIT_DIST;
    static constexpr double MUTATION_RATE = 0.1;
    static constexpr int MUTATION_BITS = MUTATION_RATE * SINGLE_CMD_BITS;
@@ -570,7 +570,6 @@ private:
    size_type pos = 0;
 public:
    void set(const vector<T> &c) { container = &c;}
-   void start_at(size_type i) {pos = i;}
    const T &last() {
       return (*this)[-1];
    };
@@ -595,6 +594,7 @@ public:
    static                   vector<unique_ptr<Runner> > me;
    static                   vector<unique_ptr<Runner> > other;
 
+   bool                     start = false;
    int                      num_laps = 0;
    ArenaParams              arena_params;
    PodParams                pod_params;
@@ -730,7 +730,11 @@ void Runner::act(void)
       pod_params.planner->plan(stations[0], this);
    }
 
-   write(pod_params.planner->act());
+   if (!start) {
+      write(make_tuple(stations[0], 200, false, false));
+      start = true;
+   } else
+      write(pod_params.planner->act());
 }
 
 void Runner::store_data(const icoord &pos_, const icoord &vel_, int angle)
@@ -744,6 +748,7 @@ void Runner::report_pos(const icoord &pos_, const icoord &vel, int angle, int ne
 {
    store_data(pos_, vel, angle);
    //cerr << "report pos next_cp_= " << next_cp_ << "next_cp = " << next_cp << endl;
+   cerr << "next_cp_=" << next_cp_ << "next_cp=" << next_cp << endl;
    if (next_cp_ != next_cp) {
       ++passed_stations;
       ++stations;
@@ -763,9 +768,10 @@ void Genetic::chromo_encode(int entry)
 
 void Genetic::chromo_decode(int entry)
 {
-   for (int i = 0; i < sizeof(chromo) ; i+=2) {
-      thrust_cmds[i] = current_generation[entry][i] * THRUST_RESOLUTION;
-      angle_cmds[i] = current_generation[entry][i + 1] * ANGLE_RES;
+   for (int i = 0; i < NUM_OPT_COMMANDS ; ++i) {
+      auto indx = 2*i;
+      thrust_cmds[i] = int(round(double(current_generation[entry][indx]) * THRUST_RESOLUTION));
+      angle_cmds[i] = int(round(-18. + double(current_generation[entry][indx + 1]) * ANGLE_RES));
    }
 }
 
@@ -776,15 +782,17 @@ void Genetic::simu(void)
    auto angle = runner->cangle();
 
    for (int i = 0; i < NUM_OPT_COMMANDS ; ++i) {
-      double a_rad = radians(angle_cmds[i]);
-      dcoord dtarget = {30000. * cos(a_rad), 30000. * sin(a_rad)};
-      icoord target = to_icoord(dtarget);
+      //cerr << "angle_cmds="<<angle_cmds[i] << endl;
+      double a_rad = radians(angle_cmds[i] + angle);
+      dcoord dtarget = {3000. * cos(a_rad), 3000. * sin(a_rad)};
+      icoord target = to_icoord(dtarget) + pos;
       Simulator::calc_next_turn(target, pos, vel, angle,
             thrust_cmds[i], false, false, simu_res[i]);
       pos = simu_res[i].pos;
       vel = simu_res[i].vel;
       angle = simu_res[i].angle;
    }
+   //exit(0);
 }
 
 double Genetic::target(int entry)
@@ -794,8 +802,11 @@ double Genetic::target(int entry)
    double grade0(0.), grade1(0.);
    for (int i = 0; i < NUM_OPT_COMMANDS ; ++i) {
       double d2 = simu_res[i].pos.dist_pnts2(runner->station(0));
-      if (d2 <= HIT_DIST2)
+      if (d2 <= HIT_DIST2) {
+         cerr << "runner pos=" << runner->cpos() << " runner angle="<<runner->cangle() << endl;
+         cerr << "simu pos=" << simu_res[i].pos << " station="<<runner->station(0) << " d2=" << d2 << endl;
          grade0 = 1.0;
+      }
    }
    if (grade0 > 0.99) {
       double d2 = simu_res[NUM_OPT_COMMANDS - 1].pos.dist_pnts2(runner->station(1));
@@ -810,7 +821,10 @@ double Genetic::target(int entry)
       else
          grade0 = HIT_DIST2 / d2;
    }
-   return 0.7 * grade0 + 0.3 * grade1;
+   auto ret =  0.7 * grade0 + 0.3 * grade1;
+   if (ret >= 0.7)
+      cerr << "ret="<<ret<<" station="<<runner->station(0) << endl;
+   return ret;
 }
 
 void Genetic::guess_initial_set(void)
@@ -847,15 +861,17 @@ void Genetic::natural_selection(void)
    for (int i=0; i<GENERATION_SIZE; ++i)
       Pr[i] = (double)rand() / RAND_MAX;
    sort(Pr, Pr+GENERATION_SIZE);
-   double lfp = 0.0;
+   double lfp = 0.0, rfp = fitness[0].second;
    int i = 0, ifitt = 0;
    while (i < GENERATION_SIZE) {
-      if (Pr[i] >= lfp && Pr[i] <= fitness[ifitt].second) {
+      if (Pr[i] >= lfp && Pr[i] < rfp) {
          memcpy(&new_generation[i], &current_generation[ifitt], sizeof(chromo));
          ++i;
       } else {
-         lfp = fitness[ifitt].second;
+         lfp = rfp;
          ++ifitt;
+         assert(ifitt < GENERATION_SIZE);
+         rfp += fitness[ifitt].second;
       }
    }
    auto tmp = current_generation;
@@ -897,14 +913,16 @@ void Genetic::mutate(void)
 
 instruction Genetic::act(void)
 {
+   cerr << "station=" << runner->station(0) << endl;
    best_rank = -999999.99;
    high_resolution_clock::time_point t1 = high_resolution_clock::now();
    guess_initial_set();
    high_resolution_clock::time_point t2 = high_resolution_clock::now();
    duration<double> time_span = t2 - t1;
-   //int counter = 0;
+   int counter = 0;
+   cerr << "target=" << runner->station(0) << " pos=" << runner->cpos() << endl;
    do {
-      //++counter;
+      ++counter;
       calc_fitness();
       natural_selection();
       breed_population();
@@ -915,9 +933,9 @@ instruction Genetic::act(void)
       t2 = high_resolution_clock::now();
       time_span = duration_cast<duration<double>>(t2 - t1);
    } while (time_span.count() < 0.035);
-   //cerr << "num of iterations:" << counter << endl;
+   cerr << "num of iterations:" << counter << endl;
    calc_fitness();
-   double b_angle_rad = radians(best_angle);
+   double b_angle_rad = radians(best_angle + runner->cangle());
    dcoord dtarget = {30000. * cos(b_angle_rad), 30000. * sin(b_angle_rad)};
    icoord itarget = to_icoord(dtarget);
    cerr << "best_rank=" << best_rank  << "HIT_DIST=" << HIT_DIST <<  endl;
@@ -1164,6 +1182,7 @@ int main()
         int xs;
         int ys;
         cin >> xs >> ys; cin.ignore();
+        cerr << xs << "," << ys << endl;
         stations.push_back({xs, ys});
     }
     if (!detector.detect(stations)) {
@@ -1183,6 +1202,8 @@ int main()
             int nextCheckPointId; // next check point id of your pod
             cin >> x >> y >> vx >> vy >> angle >> nextCheckPointId; cin.ignore();
             Runner::me[i]->report_pos({x, y}, {vx, vy}, angle, nextCheckPointId);
+            if (i == 0)
+               cerr <<"given angle="<<angle << endl;
         }
         for (int i = 0; i < 2; i++) {
             int x; // x position of the opponent's pod

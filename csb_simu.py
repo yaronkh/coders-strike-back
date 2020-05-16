@@ -167,7 +167,7 @@ if __name__ == "__main__":
         os.environ["PYTHONUNBUFFERED"] = "1"
         for t in tracks:
             TRACKS[t.name] = t
-        sel_track = TRACKS["triangle"]
+        sel_track = TRACKS["Zigzag"]
         num_laps = 1
         code = sys.argv[1]
         p = subprocess.Popen([code],stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
