@@ -304,7 +304,7 @@ struct PodParams {
    static constexpr int max_thrust = 200;
    static constexpr int rot_vel = 18;
    static constexpr double fric_thruts_to_thrust_ratio = 0.85;
-   static constexpr int pod_rad = 250;
+   static constexpr int pod_rad = 350;
 
    unique_ptr<Planner> planner;
    PodParams();
@@ -466,7 +466,7 @@ public:
    //chromozom typedef
    typedef uint8_t chromo[NUM_OPT_COMMANDS * 2];
 
-   Runner *runner = nullptr;
+   //Runner *runner = nullptr;
 
    //buffer to hold chromozomes
    chromo buffer[GENERATION_SIZE];
@@ -474,7 +474,6 @@ public:
    chromo buffer2[GENERATION_SIZE];
    chromo *new_generation = buffer2;
    pair<int, double> fitness[GENERATION_SIZE];
-   int selection[GENERATION_SIZE];
 
    int best_thrust = 0;
    int best_angle = 0;
@@ -756,31 +755,35 @@ void Runner::report_pos(const icoord &pos_, const icoord &vel, int angle, int ne
 void Genetic::chromo_encode(int entry)
 {
    for (int i = 0; i < NUM_OPT_COMMANDS ; ++i) {
-      current_generation[entry][i << 1] = thrust_cmds[i] / THRUST_RESOLUTION;
-      current_generation[entry][(i << 1) | 0x1] = angle_cmds[i] / ANGLE_RES;
+      auto indx = (i << 1);
+      current_generation[entry][indx] = uint8_t(thrust_cmds[i] / THRUST_RESOLUTION);
+      current_generation[entry][indx + 1] = uint8_t(angle_cmds[i] / ANGLE_RES);
    }
 }
 
 void Genetic::chromo_decode(int entry)
 {
-   for (int i = 0; i < NUM_OPT_COMMANDS ; ++i) {
-      thrust_cmds[i] = current_generation[entry][i << 1] * THRUST_RESOLUTION;
-      angle_cmds[i] = current_generation[entry][(i << 1) | 0x1] * ANGLE_RES;
+   for (int i = 0; i < sizeof(chromo) ; i+=2) {
+      thrust_cmds[i] = current_generation[entry][i] * THRUST_RESOLUTION;
+      angle_cmds[i] = current_generation[entry][i + 1] * ANGLE_RES;
    }
 }
 
 void Genetic::simu(void)
 {
-   simu_res[0].pos = runner->cpos();
-   simu_res[0].vel = runner->cvel();
-   simu_res[0].angle = runner->cangle();
+   auto pos = runner->cpos();
+   auto vel = runner->cvel();
+   auto angle = runner->cangle();
 
    for (int i = 0; i < NUM_OPT_COMMANDS ; ++i) {
       double a_rad = radians(angle_cmds[i]);
       dcoord dtarget = {30000. * cos(a_rad), 30000. * sin(a_rad)};
       icoord target = to_icoord(dtarget);
-      Simulator::calc_next_turn(target, simu_res[i].pos, simu_res[i].vel, simu_res[i].angle,
+      Simulator::calc_next_turn(target, pos, vel, angle,
             thrust_cmds[i], false, false, simu_res[i]);
+      pos = simu_res[i].pos;
+      vel = simu_res[i].vel;
+      angle = simu_res[i].angle;
    }
 }
 
@@ -794,7 +797,7 @@ double Genetic::target(int entry)
       if (d2 <= HIT_DIST2)
          grade0 = 1.0;
    }
-   if (grade0 > 0.) {
+   if (grade0 > 0.99) {
       double d2 = simu_res[NUM_OPT_COMMANDS - 1].pos.dist_pnts2(runner->station(1));
       if (d2 <= HIT_DIST2)
          grade1 = 1.0;
@@ -814,7 +817,7 @@ void Genetic::guess_initial_set(void)
 {
    srand (time(NULL));
    for (int i=0; i<GENERATION_SIZE; ++i) {
-      for (int j=0; j<(2*NUM_OPT_COMMANDS); ++j)
+      for (unsigned j=0; j<sizeof(chromo); ++j)
          current_generation[i][j] = (rand() & 0xFF);
    }
 }
@@ -822,9 +825,7 @@ void Genetic::guess_initial_set(void)
 
 void Genetic::calc_fitness(void)
 {
-   instruction best;
    double tot = 0.;
-   double best_rank = -9999.99;
    for (int i=0; i < GENERATION_SIZE; ++i) {
       double tar = target(i);
       if (tar > best_rank) {
@@ -835,13 +836,9 @@ void Genetic::calc_fitness(void)
       tot += tar;
       fitness[i] = pair<int, double>(i, tar);
    }
-   double tot2 = 0.;
    for (int i=0; i < GENERATION_SIZE; ++i) {
-      double cur = fitness[i].second / tot;
-      fitness[i].second = cur + tot2;
-      tot2 += cur;
+      fitness[i].second /= tot;
    }
-   assert(tot2 == 1.0);
 }
 
 void Genetic::natural_selection(void)
@@ -854,8 +851,7 @@ void Genetic::natural_selection(void)
    int i = 0, ifitt = 0;
    while (i < GENERATION_SIZE) {
       if (Pr[i] >= lfp && Pr[i] <= fitness[ifitt].second) {
-         selection[i] = ifitt;
-         memcpy(&new_generation[i], &current_generation[ifitt], sizeof(buffer[0]));
+         memcpy(&new_generation[i], &current_generation[ifitt], sizeof(chromo));
          ++i;
       } else {
          lfp = fitness[ifitt].second;
@@ -894,7 +890,7 @@ void Genetic::mutate(void)
 {
    uint8_t *generation = (uint8_t *)new_generation;
    for (int i = 0; i < MUTATION_BITS; ++i) {
-      int bit = rand() % (NUM_BITS_PER_COMMAND * GENERATION_SIZE);
+      int bit = rand() % (sizeof(chromo) * NUM_BITS_PER_COMMAND * GENERATION_SIZE);
       generation[bit >> 3] ^= (0x1 << (bit & 0x7));
    }
 }
@@ -905,8 +901,10 @@ instruction Genetic::act(void)
    high_resolution_clock::time_point t1 = high_resolution_clock::now();
    guess_initial_set();
    high_resolution_clock::time_point t2 = high_resolution_clock::now();
-   duration<double, std::milli> time_span = t2 - t1;
+   duration<double> time_span = t2 - t1;
+   //int counter = 0;
    do {
+      //++counter;
       calc_fitness();
       natural_selection();
       breed_population();
@@ -915,12 +913,14 @@ instruction Genetic::act(void)
       current_generation = new_generation;
       new_generation = tmp;
       t2 = high_resolution_clock::now();
-      time_span = t2 - t1;
-   } while (time_span < milliseconds(35));
+      time_span = duration_cast<duration<double>>(t2 - t1);
+   } while (time_span.count() < 0.035);
+   //cerr << "num of iterations:" << counter << endl;
    calc_fitness();
    double b_angle_rad = radians(best_angle);
    dcoord dtarget = {30000. * cos(b_angle_rad), 30000. * sin(b_angle_rad)};
    icoord itarget = to_icoord(dtarget);
+   cerr << "best_rank=" << best_rank  << "HIT_DIST=" << HIT_DIST <<  endl;
    return {itarget, best_thrust, false, false};
 }
 
@@ -1141,7 +1141,7 @@ public:
 
 PodParams::PodParams()
 {
-   planner = make_unique<Planner3>();
+   planner = make_unique<Genetic>();
 }
 
 
@@ -1194,8 +1194,11 @@ int main()
             cin >> x >> y >> vx >> vy >> angle >> nextCheckPointId; cin.ignore();
             Runner::other[i]->report_pos({x, y}, {vx, vy}, angle, nextCheckPointId);
         }
-        cerr << "acting" << endl;
+        //high_resolution_clock::time_point t1 = high_resolution_clock::now();
         Runner::me[0]->act();
+        //high_resolution_clock::time_point t2 = high_resolution_clock::now();
+        //duration<double> time_span = t2 - t1;
+        //cerr << "time="<<time_span.count() << endl;
         //Runner::me[1]->act();
         cout << "8000 8000 0" << endl;
     }
